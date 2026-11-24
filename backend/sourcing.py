@@ -194,7 +194,7 @@ def llm_picks(con, pool, keyword, how_many):
 
 
 # ---------------------------------------------------------------- one run
-def run(con, keyword, market="dome", look=10, picks=3, use_llm=True):
+def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None):
     """Search, filter, pick and queue drafts. Returns {'events', 'created', 'items', 'total', ...}. Never raises."""
     keyword = " ".join(keyword.split())
     events, items = [], []
@@ -281,7 +281,7 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True):
         result["created"] += 1
 
     db.log_action(con, "sourcing_run", f"keyword={keyword} market={market} looked={result['looked']} "
-                                       f"picked={result['created']} llm={result['used_llm']}")
+                                       f"picked={result['created']} llm={result['used_llm']}" + (f" by={by}" if by else ""))
     db.add_run(con, keyword, market, {k: result[k] for k in ("items", "created", "total", "looked", "used_llm")})
     return result
 

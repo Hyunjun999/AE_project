@@ -56,7 +56,7 @@ def with_margins(shop):
     return {**shop, "products": products}
 
 
-def overview(_query, _body):
+def overview(_query, body):
     con = db.connect()
     orders.sync(con)
     return {
@@ -67,7 +67,7 @@ def overview(_query, _body):
         "tokens": {"used": llm.used_this_week(con), "cap": llm.WEEKLY_CAP, "week_start": llm.week_start(),
                    "model": llm.MODEL},
         "rules": {"fee_rate": FEE_RATE, "min_margin": MIN_MARGIN, "max_title": drafts.MAX_TITLE},
-        "reviewer": REVIEWER,
+        "reviewer": body.get("_user") or REVIEWER,  # whoever signed in; REVIEWER on a local desk and in the snapshot
     }
 
 
@@ -95,7 +95,7 @@ def decide(draft_id, action, body):
 def source(_query, body):
     con = db.connect()
     return sourcing.run(con, str(body.get("keyword") or ""), str(body.get("market") or "dome"),
-                        body.get("look") or 10, body.get("picks") or 3, use_llm=bool(body.get("use_llm")))
+                        body.get("look") or 10, body.get("picks") or 3, use_llm=bool(body.get("use_llm")), by=body.get("_user"))
 
 
 def sourcing_runs(_query, _body):
@@ -134,7 +134,7 @@ def ask(_query, body):
     question = (body.get("question") or "").strip()
     if not question:
         raise ApiError(400, "Type a question first.")
-    return agent.ask(question)
+    return agent.ask(question, by=body.get("_user"))
 
 
 def activity(query, _body):
@@ -211,10 +211,11 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/healthz":  # for the host's health check; reveals nothing
             self._send(200, {"ok": True})
             return
-        if self._user() is None:
+        user = self._user()
+        if user is None:
             return
         if url.path in GET_ROUTES:
-            self._api(GET_ROUTES[url.path], parse_qs(url.query), {})
+            self._api(GET_ROUTES[url.path], parse_qs(url.query), {"_user": user})
         elif url.path.startswith("/api/"):
             self._send(404, {"error": "Unknown API path"})
         else:

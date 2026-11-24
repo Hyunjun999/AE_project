@@ -42,7 +42,7 @@ def build_context(con):
     }
 
 
-def ask(question):
+def ask(question, by=None):
     """Return {'answer': str, 'tokens_used': int, 'tokens_cap': int}. Never raises."""
     con = db.connect()
     context = json.dumps(build_context(con), ensure_ascii=False, separators=(",", ":"))
@@ -58,7 +58,7 @@ def ask(question):
         answer = f"Weekly token cap reached, so no LLM call was made. ({e})"
     except Exception as e:
         answer = f"The LLM call failed: {e!r}"
-    db.log_action(con, "chat", question[:200])
+    db.log_action(con, "chat", (f"by={by}: " if by else "") + question[:200])
     return {"answer": answer, "tokens_used": llm.used_this_week(con), "tokens_cap": llm.WEEKLY_CAP}
 
 
