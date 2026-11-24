@@ -23,6 +23,18 @@ function h(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Line icon from the sprite in index.html.
+function icon(name) {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('class', 'ico');
+  svg.setAttribute('aria-hidden', 'true');
+  const use = document.createElementNS(ns, 'use');
+  use.setAttribute('href', `#i-${name}`);
+  svg.append(use);
+  return svg;
+}
+
 const won = (n) => Number(n).toLocaleString('en-US');
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const STATUS = { SALE: 'On sale', SUSPENSION: 'Suspended', OUTOFSTOCK: 'Out of stock', WAIT: 'Waiting', CLOSE: 'Closed' };
@@ -103,9 +115,24 @@ async function refreshOverview() {
   document.getElementById('meter-fill').style.width = pct + '%';
   document.getElementById('meter-track').classList.toggle('over', pct >= 90);
   document.getElementById('meter-foot').textContent = `${o.tokens.model}, resets Monday`;
-  const badge = document.getElementById('nav-pending');
-  badge.hidden = o.drafts.pending === 0;
-  badge.textContent = o.drafts.pending;
+  for (const id of ['nav-pending', 'bell-count']) {
+    const badge = document.getElementById(id);
+    badge.hidden = o.drafts.pending === 0;
+    badge.textContent = o.drafts.pending;
+  }
+
+  // Mission card at the foot of the menu.
+  const goal = o.mission.orders, count = o.orders.count, left = daysLeft(o.mission.deadline);
+  document.getElementById('side-orders').textContent = count;
+  document.getElementById('side-goal').textContent = `of ${goal} orders`;
+  document.getElementById('side-fill').style.width = `${Math.min(100, goal ? (count / goal) * 100 : 0)}%`;
+  document.getElementById('side-foot').textContent = state.snap
+    ? `Read-only copy. Data from ${when(state.snap.exported_at)}.`
+    : `${plural(left, 'day', 'days')} left · goal ${longDate(o.mission.deadline)}`;
+
+  const avatar = document.getElementById('avatar');
+  avatar.textContent = (o.reviewer || '·').trim().charAt(0) || '·';
+  avatar.title = state.snap ? 'Group 3' : `Signed in as ${o.reviewer}`;
   return o;
 }
 
@@ -171,7 +198,7 @@ function ordersChart(orders) {
   const top = Math.max(4, ...days.map((x) => x.n));
   const total = days.reduce((sum, x) => sum + x.n, 0);
   return h('section', { class: 'panel' },
-    h('h2', {}, 'Orders per day'),
+    h('h2', {}, icon('chart'), 'Orders per day'),
     h('p', { class: 'panel-sub' }, total ? `${plural(total, 'order', 'orders')} in the last ${days.length} days.` : `No orders in the last ${days.length} days yet.`),
     h('div', { class: 'bars', role: 'img', 'aria-label': days.map((x) => `${shortDate(x.date)}: ${x.n}`).join(', ') },
       days.map((x, i) => h('div', { class: 'bar' },
@@ -187,7 +214,7 @@ function marginWatch(products) {
   const unknown = sale.filter((p) => !p.cost);
   if (!sale.length) return null;
   return h('section', { class: 'panel' },
-    h('h2', {}, 'Margin watch'),
+    h('h2', {}, icon('eye'), 'Margin watch'),
     h('p', { class: 'panel-sub' }, 'Each product on sale against its price floor. Cost is read from the seller code in the store.'),
     known.map((p) => {
       const gap = p.price - p.floor;
@@ -226,6 +253,46 @@ async function today() {
   const under = priced.filter((p) => p.price < p.floor).length;
   const labelActions = { draft_approved: 'Draft approved', draft_rejected: 'Draft rejected', drafts_generated: 'Drafts created', gate0_reject: 'Stopped at the price floor', chat: 'Question asked', sourcing_run: 'Products searched' };
 
+  const kpi = (label, value, sub, ic, href, alarm = false) => h(href ? 'a' : 'div', { class: 'kpi' + (alarm ? ' alarm' : ''), href },
+    h('div', { class: 'kpi-text' }, h('span', { class: 'kpi-label' }, label), h('strong', {}, value), h('small', {}, sub)),
+    h('span', { class: 'kpi-icon' }, icon(ic)));
+  const panelHead = (ic, title, link, linkText) => h('div', { class: 'panel-head' },
+    h('h2', {}, icon(ic), title),
+    link ? h('a', { class: 'panel-link', href: link }, linkText, icon('arrow')) : null);
+
+  const quick = state.snap ? null : h('nav', { class: 'board-actions', 'aria-label': 'Next steps' },
+    [['#/sourcing', 'search', 'Find products', 'Search the supplier, no tokens'],
+     ['#/approvals', 'check', 'Review drafts', d.pending ? `${plural(d.pending, 'draft', 'drafts')} waiting` : 'Queue is empty'],
+     ['#/ask', 'bot', 'Ask the agent', 'About 1,000 tokens a question']].map(([href, ic, title, sub]) =>
+      h('a', { href }, h('span', { class: 'qa-icon' }, icon(ic)), h('span', {}, h('strong', {}, title), h('small', {}, sub)), h('span', { class: 'go' }, icon('arrow')))));
+
+  const queuePanel = h('section', { class: 'panel' },
+    panelHead('check', 'Waiting for approval', pending.length ? '#/approvals' : null, 'Open all'),
+    h('p', { class: 'panel-sub' }, pending.length ? `${plural(pending.length, 'draft', 'drafts')} priced and ready for a decision.` : 'The queue is empty.'),
+    pending.length
+      ? h('ul', { class: 'queue' }, pending.slice(0, 5).map((x) => h('li', {},
+          x.extra && x.extra.thumb ? h('img', { src: x.extra.thumb, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }) : h('span', { class: 'no-pic' }),
+          h('div', { style: 'min-width:0' },
+            h('a', { href: '#/approvals' }, x.title),
+            h('span', {}, `${won(x.price)} KRW`, h('span', { class: 'm' }, `${x.margin_pct}%`))))))
+      : null);
+
+  const activityPanel = h('section', { class: 'panel' },
+    panelHead('activity', 'Recent activity', '#/activity', 'Full log'),
+    log.length
+      ? h('ul', { class: 'mini-log', style: 'margin-top:var(--s4)' }, log.slice(0, 6).map((r) => h('li', {},
+          h('span', {}, when(r.ts).slice(5, 16)), h('strong', {}, labelActions[r.action] || r.action), h('em', {}, r.detail))))
+      : h('p', { class: 'panel-sub' }, 'Nothing has happened yet.'));
+
+  const storePanel = h('section', { class: 'panel' },
+    panelHead('store', 'Store', '#/store', 'All products'),
+    storeBar(o.store),
+    h('p', { class: 'panel-rules' },
+      `Every price must leave a ${Math.round(o.rules.min_margin * 100)}% margin after ${(o.rules.fee_rate * 100).toFixed(2)}% in fees. ` +
+      `Titles stay within ${o.rules.max_title} characters. The agent drafts and answers; ${o.reviewer} approves.`));
+
+  const margin = (!o.store.error && marginWatch(o.store.products)) || null;
+
   view.replaceChildren(
     h('section', { class: 'board' },
       h('div', { class: 'board-main' },
@@ -235,42 +302,21 @@ async function today() {
           h('p', { class: 'lede-sub' }, pace),
           h('p', { class: 'lede-sub' }, waiting, ' ',
             d.pending > 0 ? h('a', { href: '#/approvals' }, state.snap ? 'See the drafts' : 'Review drafts') : ''),
-          h('p', { class: 'board-foot' }, `Goal date ${longDate(o.mission.deadline)}.` + (o.orders.since ? ` Orders counted since ${longDate(o.orders.since)}.` : '')))),
+          h('p', { class: 'board-foot' }, `Goal date ${longDate(o.mission.deadline)}.` + (o.orders.since ? ` Orders counted since ${longDate(o.orders.since)}.` : ''))),
+        quick),
       belt(d)),
 
-    h('div', { class: 'fields' },
-      h('div', {}, h('span', {}, 'Products on sale'), h('strong', {}, shop ? sale.length : '–'),
-        h('small', {}, shop ? `${shop.products.length - sale.length} not on sale` : 'store not read')),
-      h('div', { class: under ? 'alarm' : '' }, h('span', {}, 'Priced below the floor'), h('strong', {}, shop ? under : '–'),
-        h('small', {}, shop ? `of ${priced.length} with a recorded cost` : 'store not read')),
-      h('div', {}, h('span', {}, 'Drafts waiting'), h('strong', {}, d.pending), h('small', {}, `${d.approved} approved, ${d.rejected} rejected`)),
-      h('div', {}, h('span', {}, 'Tokens this week'), h('strong', {}, won(o.tokens.used)), h('small', {}, `of ${won(o.tokens.cap)}`))),
+    h('div', { class: 'kpis' },
+      kpi('Products on sale', shop ? sale.length : '–', shop ? `${shop.products.length - sale.length} not on sale` : 'store not read', 'box', '#/store'),
+      kpi('Priced below the floor', shop ? under : '–', shop ? `of ${priced.length} with a recorded cost` : 'store not read', 'alert', null, Boolean(under)),
+      kpi('Drafts waiting', d.pending, `${d.approved} approved, ${d.rejected} rejected`, 'clock', '#/approvals'),
+      kpi('Tokens this week', won(o.tokens.used), `of ${won(o.tokens.cap)}`, 'coins', null)),
 
-    h('div', { class: 'cols' },
-      ordersChart(o.orders),
-      h('section', { class: 'panel' },
-        h('h2', {}, 'Waiting for approval'),
-        pending.length
-          ? h('ul', { class: 'queue' }, pending.slice(0, 4).map((x) => h('li', {},
-              h('a', { href: '#/approvals' }, x.title),
-              h('span', {}, `${won(x.price)} KRW, ${x.margin_pct}% margin`))))
-          : h('p', { class: 'panel-sub' }, 'The queue is empty.'))),
+    h('div', { class: 'dash-row' }, ordersChart(o.orders), queuePanel),
 
-    (!o.store.error && marginWatch(o.store.products)) || '',
-
-    h('div', { class: 'cols' },
-      h('section', { class: 'panel' },
-        h('h2', {}, 'Recent activity'),
-        log.length
-          ? h('ul', { class: 'mini-log' }, log.slice(0, 6).map((r) => h('li', {},
-              h('span', {}, when(r.ts).slice(5, 16)), h('strong', {}, labelActions[r.action] || r.action), h('em', {}, r.detail))))
-          : h('p', { class: 'panel-sub' }, 'Nothing has happened yet.')),
-      h('section', { class: 'panel' },
-        h('h2', {}, 'Store'),
-        storeBar(o.store),
-        h('p', { class: 'panel-rules' },
-          `Every price must leave a ${Math.round(o.rules.min_margin * 100)}% margin after ${(o.rules.fee_rate * 100).toFixed(2)}% in fees. ` +
-          `Titles stay within ${o.rules.max_title} characters. The agent drafts and answers; ${o.reviewer} approves.`))),
+    margin
+      ? h('div', { class: 'dash-row' }, margin, h('div', { class: 'dash-stack' }, storePanel, activityPanel))
+      : h('div', { class: 'dash-row even' }, storePanel, activityPanel),
   );
 }
 
@@ -308,7 +354,7 @@ async function approvals() {
       h('p', {}, 'Ask the agent to find products on the Sourcing page. Its picks arrive here for you to price and approve.'),
       h('a', { class: 'btn primary', href: '#/sourcing', style: 'text-decoration:none;display:inline-block' }, 'Go to Sourcing')));
   } else {
-    nodes.push(...list.map((d) => ticket(d, maxTitle)));
+    nodes.push(h('div', { class: 'ticket-grid' }, list.map((d) => ticket(d, maxTitle))));
   }
   view.replaceChildren(...nodes);
 }
@@ -322,7 +368,7 @@ async function approvalsReadOnly() {
     const list = state.snap.drafts[status] || [];
     if (!list.length) continue;
     total += list.length;
-    nodes.push(h('h2', {}, `${title} (${list.length})`), ...list.map((d) => ticket(d, o.rules.max_title)));
+    nodes.push(h('h2', {}, `${title} (${list.length})`), h('div', { class: 'ticket-grid' }, list.map((d) => ticket(d, o.rules.max_title))));
   }
   if (!total) nodes.push(h('div', { class: 'empty' }, h('h3', {}, 'No drafts yet'), h('p', {}, 'Drafts appear here once the agent has proposed listings.')));
   view.replaceChildren(...nodes);
@@ -554,7 +600,9 @@ async function price() {
 
   view.replaceChildren(
     head('Price check', `Minimum margin ${Math.round(rules.min_margin * 100)}%, fees ${(rules.fee_rate * 100).toFixed(2)}%. No tokens are used here.`),
-    h('div', { class: 'price-grid' }, form, result));
+    h('div', { class: 'price-grid' },
+      h('section', { class: 'panel' }, h('h2', { style: 'margin-bottom:var(--s4)' }, icon('coins'), 'Costs'), form),
+      h('section', { class: 'panel' }, h('h2', { style: 'margin-bottom:var(--s3)' }, icon('tag'), 'Result'), result)));
 }
 
 // ---------------------------------------------------------------- Ask
@@ -565,12 +613,14 @@ async function ask() {
     view.replaceChildren(
       head('Ask the agent', 'Questions the team asked and what the agent answered. It reads the store and the drafts; it cannot change anything.'),
       chats.length
-        ? h('div', { class: 'chat' }, chats.flatMap((c) => [h('div', { class: 'q' }, c.question), h('div', { class: 'a' }, c.answer), h('div', { class: 'chat-when' }, when(c.ts))]))
+        ? h('section', { class: 'panel', style: 'margin-top:0' }, h('div', { class: 'chat' }, chats.flatMap((c) => [h('div', { class: 'q' }, c.question), h('div', { class: 'a' }, c.answer), h('div', { class: 'chat-when' }, when(c.ts))])))
         : h('div', { class: 'empty' }, h('h3', {}, 'No questions recorded yet'), h('p', {}, 'Answers appear here after the team asks the agent something.')));
     return;
   }
   const log = h('div', { class: 'chat', 'aria-live': 'polite' });
-  const draw = () => log.replaceChildren(...state.chat.map((m) => h('div', { class: m.role }, m.text)));
+  const draw = () => log.replaceChildren(...(state.chat.length
+    ? state.chat.map((m) => h('div', { class: m.role }, m.text))
+    : [h('div', { class: 'chat-empty' }, icon('bot'), h('p', {}, 'Ask about products, drafts, prices or margins. Try one of the suggestions on the right.'))]));
   const input = h('input', { type: 'text', placeholder: 'Ask about products, drafts, prices or margins', 'aria-label': 'Question', autocomplete: 'off' });
   const button = h('button', { class: 'btn primary' }, 'Ask');
 
@@ -594,16 +644,32 @@ async function ask() {
 
   view.replaceChildren(
     head('Ask the agent', 'It reads the store and the drafts, then answers. It cannot change anything. Each question spends roughly 1,000 tokens.'),
-    state.chat.length ? null : h('div', { class: 'suggest' }, ideas.map((q) => h('button', { class: 'chip', onclick: () => send(q) }, q))),
-    log,
-    h('form', { class: 'ask-form', onsubmit: (e) => { e.preventDefault(); send(); } }, input, button));
+    h('div', { class: 'ask-grid' },
+      h('section', { class: 'panel chat-panel' },
+        log,
+        h('form', { class: 'ask-form', onsubmit: (e) => { e.preventDefault(); send(); } }, input, button)),
+      h('div', {},
+        h('section', { class: 'panel' },
+          h('h2', { style: 'margin-bottom:var(--s3)' }, icon('bot'), 'Try asking'),
+          h('div', { class: 'suggest' }, ideas.map((q) => h('button', { class: 'chip', type: 'button', onclick: () => send(q) }, q)))),
+        h('section', { class: 'panel tight' },
+          h('h2', {}, icon('eye'), 'What it can see'),
+          h('ul', { class: 'side-list' },
+            ['Products in the store, with prices and status', 'Drafts waiting, approved and rejected', 'Price floors and margins'].map((t) => h('li', {}, icon('check'), t))),
+          h('p', { class: 'panel-rules' }, `This week: ${won(state.overview.tokens.used)} of ${won(state.overview.tokens.cap)} tokens used.`)))));
   draw();
-  input.focus();
+  if (state.pendingQuestion) {
+    const q = state.pendingQuestion;
+    state.pendingQuestion = null;
+    send(q);
+  } else {
+    input.focus();
+  }
 }
 
 // ---------------------------------------------------------------- Activity
 async function activity() {
-  const rows = await api('/api/activity?limit=100');
+  const [rows] = await Promise.all([api('/api/activity?limit=100'), refreshOverview()]);
   const label = { draft_approved: 'Draft approved', draft_rejected: 'Draft rejected', drafts_generated: 'Drafts created',
     gate0_reject: 'Stopped at the price floor', chat: 'Question asked', sourcing_run: 'Products searched' };
   view.replaceChildren(
@@ -619,14 +685,26 @@ async function activity() {
 
 // ---------------------------------------------------------------- router
 const views = { today, sourcing, approvals, store, price, ask, activity };
+const TITLES = { today: 'Dashboard', sourcing: 'Sourcing', approvals: 'Approvals', store: 'Store', price: 'Price check', ask: 'Ask the agent', activity: 'Activity' };
+
+function setMenu(open) {
+  document.body.classList.toggle('nav-open', open);
+  document.getElementById('scrim').hidden = !open;
+  document.getElementById('menu-btn').setAttribute('aria-expanded', String(open));
+}
 
 async function route() {
-  const name = (location.hash.replace('#/', '') || 'today');
-  const render = views[name] || today;
+  const asked = location.hash.replace('#/', '') || 'today';
+  const name = views[asked] ? asked : 'today';
+  const render = views[name];
   document.querySelectorAll('.nav a').forEach((a) => {
-    if (a.dataset.view === (views[name] ? name : 'today')) a.setAttribute('aria-current', 'page');
+    if (a.dataset.view === name) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
+  document.getElementById('crumb').textContent = TITLES[name];
+  document.title = `${TITLES[name]} · Agentic desk`;
+  setMenu(false);
+  window.scrollTo(0, 0);
   if (PUBLIC && !state.snap) {
     view.replaceChildren(head('Agentic desk'), h('div', { class: 'empty' }, h('h3', {}, 'No data has been published yet'),
       h('p', {}, 'The team publishes the desk\'s data from its own machine. Please check back shortly.')));
@@ -639,10 +717,31 @@ async function route() {
   }
 }
 
-if (state.snap) {
+// ---------------------------------------------------------------- shell
+if (PUBLIC) {
   document.body.classList.add('snapshot');
-  document.querySelector('.nav').after(h('p', { class: 'snap-note' },
-    h('strong', {}, 'Read-only view'), ` Data from ${when(state.snap.exported_at)}. Approvals and the agent run on the team's own desk.`));
+  const mode = document.getElementById('mode');
+  mode.classList.add('read');
+  document.getElementById('mode-text').textContent = state.snap ? `Read-only · ${when(state.snap.exported_at)}` : 'Read-only';
+  mode.title = "Approvals and the agent run on the team's own desk.";
+  document.getElementById('quick-ask').hidden = true;
 }
+
+document.getElementById('menu-btn').addEventListener('click', () => setMenu(!document.body.classList.contains('nav-open')));
+document.getElementById('scrim').addEventListener('click', () => setMenu(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setMenu(false); });
+
+// The question box in the top bar opens Ask the agent and sends the question there.
+document.getElementById('quick-ask').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = document.getElementById('quick-ask-input');
+  const question = input.value.trim();
+  if (!question) return;
+  input.value = '';
+  state.pendingQuestion = question;
+  if (location.hash === '#/ask') route();
+  else location.hash = '#/ask';
+});
+
 window.addEventListener('hashchange', route);
 route();
