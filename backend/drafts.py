@@ -132,7 +132,20 @@ def generate(con, csv_path=CANDIDATES_CSV, use_llm=True):
     return {"events": events, "created": created}
 
 
-def decide(con, draft_id, action, reviewer, new_title=None):
+def extra_of(d):
+    """Sourcing details kept with the candidate (image, supplier link, notes, resale rule), or {}."""
+    try:
+        return json.loads(d["extra"]) if d["extra"] else {}
+    except (ValueError, TypeError, IndexError, KeyError):
+        return {}
+
+
+def lowest_price(d):
+    """The lowest price a person may set: our floor, or the supplier's resale minimum if that is higher."""
+    return max(d["floor"], int(extra_of(d).get("resale_min") or 0))
+
+
+def decide(con, draft_id, action, reviewer, new_title=None, new_price=None):
     """Approve or reject one pending draft. Returns (ok, message)."""
     d = db.get_draft(con, draft_id)
     if d is None:
@@ -145,20 +158,28 @@ def decide(con, draft_id, action, reviewer, new_title=None):
     if action != "approve":
         return False, f"Unknown action '{action}'."
 
+    try:
+        price = d["price"] if new_price in (None, "") else int(new_price)
+    except (TypeError, ValueError):
+        return False, "The price must be a whole number of KRW."
+    if price < lowest_price(d):
+        return False, f"The price {price} is below the lowest allowed price {lowest_price(d)}."
+    price_change = price if price != d["price"] else None
+
     new_title = (new_title or "").strip()
     if new_title and new_title != d["title"]:
         flags = check_title(new_title, {"keyword1": d["keyword1"], "name": d["name"]})
         hard = [f for f in flags if is_hard(f)]
         if hard:
             return False, "The title breaks a hard rule: " + "; ".join(hard)
-        db.set_decision(con, draft_id, "approved", reviewer, title=new_title, flags="; ".join(flags))
-        return True, "Approved with the edited title"
+        db.set_decision(con, draft_id, "approved", reviewer, title=new_title, flags="; ".join(flags), price=price_change)
+        return True, "Approved with the edited title" + (" and price" if price_change else "")
 
     hard = [f for f in split_flags(d["flags"]) if is_hard(f)]
     if hard:
         return False, "The title breaks a hard rule: " + "; ".join(hard) + ". Edit it or reject it."
-    db.set_decision(con, draft_id, "approved", reviewer)
-    return True, "Approved"
+    db.set_decision(con, draft_id, "approved", reviewer, price=price_change)
+    return True, "Approved at the price you set" if price_change else "Approved"
 
 
 def to_view(d):
@@ -174,4 +195,5 @@ def to_view(d):
         "profit": profit, "margin_pct": round(margin * 100, 1),
         "flags": flags, "blocked": any(is_hard(f) for f in flags),
         "decided_by": d["decided_by"], "decided_at": d["decided_at"],
+        "reason": d["reason"], "extra": extra_of(d), "lowest_price": lowest_price(d),
     }

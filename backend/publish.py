@@ -43,6 +43,7 @@ def build_snapshot(overview_fn=None):
         "drafts": {s: [drafts.to_view(d) for d in db.drafts_by_status(con, s)] for s in STATUSES},
         "activity": [dict(r) for r in db.recent_actions(con, 100)],
         "chats": [dict(r) for r in db.recent_chats(con, 20)],
+        "sourcing": db.recent_runs(con, 5),
     }
 
 

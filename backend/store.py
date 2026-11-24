@@ -1,9 +1,36 @@
 """Read-only view of the store. Cached for a minute so pages do not hammer the Commerce API."""
+import re
 import time
 
 PAGE_SIZE = 50
 MAX_PAGES = 10          # up to 500 products
+COST_TTL = 600          # seconds a product's cost is remembered before it is read again
+COST_PATTERN = re.compile(r"원가\s*([\d,]+)")   # the team writes e.g. "원가8600" in a seller code field
 _cache = {"at": 0.0, "data": None}
+_costs = {}             # product no -> (time read, cost or None)
+
+
+def cost_from_codes(codes):
+    """Find "원가<number>" in the seller code fields. Returns an int, or None when it is not written there."""
+    for value in (codes or {}).values():
+        match = COST_PATTERN.search(str(value))
+        if match:
+            return int(match.group(1).replace(",", ""))
+    return None
+
+
+def _cost(api, product_no):
+    cached = _costs.get(product_no)
+    if cached and time.time() - cached[0] < COST_TTL:
+        return cached[1]
+    time.sleep(0.6)  # the API allows 2 requests per second
+    r = api("GET", f"/v2/products/origin-products/{product_no}")
+    if r.status_code != 200:
+        return cached[1] if cached else None
+    codes = r.json().get("originProduct", {}).get("detailAttribute", {}).get("sellerCodeInfo", {})
+    cost = cost_from_codes(codes)
+    _costs[product_no] = (time.time(), cost)
+    return cost
 
 
 def _fetch():
@@ -27,6 +54,9 @@ def _fetch():
         if len(contents) < PAGE_SIZE:
             break
         time.sleep(0.6)  # the API allows 2 requests per second
+    for product in products:
+        if product["status"] == "SALE":
+            product["cost"] = _cost(api, product["no"])
     counts = {}
     for p in products:
         counts[p["status"]] = counts.get(p["status"], 0) + 1

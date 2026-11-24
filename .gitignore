@@ -9,3 +9,6 @@ check_log.txt
 # python
 __pycache__/
 *.pyc
+
+server.log
+*.md

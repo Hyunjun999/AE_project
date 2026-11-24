@@ -22,12 +22,15 @@ import agent
 import db
 import drafts
 import llm
+import orders
+import sourcing
 import store
 from price import FEE_RATE, MIN_MARGIN, contribution, price_floor
 
 HOST, PORT = os.getenv("HOST", "127.0.0.1"), int(os.getenv("PORT", "8000"))
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
 AUTO_PUBLISH_MINUTES = int(os.getenv("AUTO_PUBLISH_MINUTES", "0"))  # 0 = publish only by hand
+MISSION = {"deadline": os.getenv("MISSION_DEADLINE", "2026-12-23"), "orders": int(os.getenv("MISSION_ORDERS", "100"))}
 FRONTEND = (Path(__file__).parent.parent / "frontend").resolve()
 REVIEWER = os.getenv("REVIEWER") or getpass.getuser()
 
@@ -39,10 +42,27 @@ class ApiError(Exception):
 
 
 # ---------------------------------------------------------------- API functions
+def with_margins(shop):
+    """Add floor, profit and margin to every on-sale product whose cost is known. Returns a copy."""
+    if "error" in shop:
+        return shop
+    products = []
+    for p in shop["products"]:
+        p = dict(p)
+        if p.get("cost") and p.get("price"):
+            profit, margin = contribution(p["price"], p["cost"])
+            p.update(floor=price_floor(p["cost"]), profit=profit, margin_pct=round(margin * 100, 1))
+        products.append(p)
+    return {**shop, "products": products}
+
+
 def overview(_query, _body):
     con = db.connect()
+    orders.sync(con)
     return {
-        "store": store.snapshot(),
+        "store": with_margins(store.snapshot()),
+        "orders": orders.tally(con),
+        "mission": MISSION,
         "drafts": db.draft_counts(con),
         "tokens": {"used": llm.used_this_week(con), "cap": llm.WEEKLY_CAP, "week_start": llm.week_start(),
                    "model": llm.MODEL},
@@ -66,10 +86,20 @@ def generate_drafts(_query, body):
 
 def decide(draft_id, action, body):
     con = db.connect()
-    ok, message = drafts.decide(con, draft_id, action, body.get("_user") or REVIEWER, body.get("title"))
+    ok, message = drafts.decide(con, draft_id, action, body.get("_user") or REVIEWER, body.get("title"), body.get("price"))
     if not ok:
         raise ApiError(409, message)
     return {"message": message, "drafts": db.draft_counts(con)}
+
+
+def source(_query, body):
+    con = db.connect()
+    return sourcing.run(con, str(body.get("keyword") or ""), str(body.get("market") or "dome"),
+                        body.get("look") or 10, body.get("picks") or 3, use_llm=bool(body.get("use_llm")))
+
+
+def sourcing_runs(_query, _body):
+    return db.recent_runs(db.connect(), 5)
 
 
 def price_check(query, _body):
@@ -123,8 +153,8 @@ def egress_ip(_query, _body):
 
 
 GET_ROUTES = {"/api/overview": overview, "/api/drafts": list_drafts, "/api/price": price_check,
-              "/api/activity": activity, "/api/egress-ip": egress_ip}
-POST_ROUTES = {"/api/drafts/generate": generate_drafts, "/api/ask": ask}
+              "/api/activity": activity, "/api/egress-ip": egress_ip, "/api/sourcing": sourcing_runs}
+POST_ROUTES = {"/api/drafts/generate": generate_drafts, "/api/ask": ask, "/api/source": source}
 DECISION = re.compile(r"^/api/drafts/(\d+)/(approve|reject)$")
 
 

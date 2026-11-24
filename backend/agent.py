@@ -10,6 +10,7 @@ import sys
 import db
 import drafts
 import llm
+import orders
 import store
 from price import FEE_RATE, MIN_MARGIN
 
@@ -30,12 +31,13 @@ def build_context(con):
         shop = snap
     else:
         shop = {"count_by_status": snap["count_by_status"],
-                "on_sale": [{k: p[k] for k in ("no", "name", "price", "stock")}
+                "on_sale": [{k: p[k] for k in ("no", "name", "price", "stock", "cost") if p.get(k) is not None}
                             for p in snap["products"] if p["status"] == "SALE"]}
     rows = [drafts.to_view(d) for s in ("pending", "approved") for d in db.drafts_by_status(con, s)]
     return {
         "store": shop,
         "drafts": [{k: v[k] for k in KEEP} for v in rows],
+        "orders_counted": orders.tally(con)["count"],
         "llm_tokens": {"used_this_week": llm.used_this_week(con), "weekly_cap": llm.WEEKLY_CAP},
     }
 
@@ -51,6 +53,7 @@ def ask(question):
              {"role": "user", "content": f"DATA:\n{context}\n\nQUESTION: {question}"}],
             purpose="chat", max_tokens=350,
         )
+        db.add_chat(con, question[:500], answer)
     except llm.TokenCapReached as e:
         answer = f"Weekly token cap reached, so no LLM call was made. ({e})"
     except Exception as e:
