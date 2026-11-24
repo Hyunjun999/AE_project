@@ -12,6 +12,8 @@ import json
 import mimetypes
 import os
 import re
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -25,6 +27,7 @@ from price import FEE_RATE, MIN_MARGIN, contribution, price_floor
 
 HOST, PORT = os.getenv("HOST", "127.0.0.1"), int(os.getenv("PORT", "8000"))
 APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+AUTO_PUBLISH_MINUTES = int(os.getenv("AUTO_PUBLISH_MINUTES", "0"))  # 0 = publish only by hand
 FRONTEND = (Path(__file__).parent.parent / "frontend").resolve()
 REVIEWER = os.getenv("REVIEWER") or getpass.getuser()
 
@@ -213,9 +216,28 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def auto_publish():
+    """Every few minutes, push the desk's data for the public page, but only when something changed."""
+    import publish
+
+    delay = 10
+    while True:
+        time.sleep(delay)
+        delay = AUTO_PUBLISH_MINUTES * 60
+        try:
+            message = publish.publish_if_changed(lambda: overview({}, {}))
+        except Exception as e:
+            message = f"failed: {e!r}"
+        if message:
+            print(f"[publish {time.strftime('%Y-%m-%d %H:%M')}] {message}", flush=True)
+
+
 if __name__ == "__main__":
     if HOST not in ("127.0.0.1", "localhost", "::1") and not APP_PASSWORD:
         raise SystemExit("Refusing to start: HOST is public but APP_PASSWORD is not set.")
     lock = "password on" if APP_PASSWORD else "no password (local only)"
-    print(f"Listening on {HOST}:{PORT} | {lock} | reviewer: {REVIEWER}  (Ctrl+C to stop)")
+    print(f"Listening on {HOST}:{PORT} | {lock} | reviewer: {REVIEWER}  (Ctrl+C to stop)", flush=True)
+    if AUTO_PUBLISH_MINUTES > 0:
+        print(f"Publishing to the public page every {AUTO_PUBLISH_MINUTES} minutes when the data changes.", flush=True)
+        threading.Thread(target=auto_publish, daemon=True).start()
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
