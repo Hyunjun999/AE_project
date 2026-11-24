@@ -28,6 +28,7 @@ import requests
 
 import db
 import drafts
+import social
 import sourcing
 from naver import api
 
@@ -392,10 +393,13 @@ def register(con, draft_id, category_id, by=None, dry_run=False):
         "category_id": str(category_id), "display": "SUSPENSION",
         "listed_at": db.now(), "listed_by": by,
         "detail_images_hosted": sum(1 for p in pictures if p in hosted), "detail_images": len(pictures),
+        "main_image": main,                                                   # Naver-hosted, public: used by social.py
+        "hosted_images": [hosted[p] for p in pictures if p in hosted][:4],
     }
     db.set_listed(con, draft_id, listing)
     db.log_action(con, "draft_listed", f"draft_id={draft_id} product={listing['origin_product_no']} hidden"
                                        + (f" by={by}" if by else ""))
+    social.after_listing(draft_id)   # background; does nothing unless SOCIAL_AUTOPOST=1; never raises
     return listing
 
 

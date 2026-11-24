@@ -24,6 +24,7 @@ import drafts
 import listing
 import llm
 import orders
+import social
 import sourcing
 import store
 from price import FEE_RATE, MIN_MARGIN, contribution, price_floor
@@ -110,6 +111,22 @@ def category_options(draft_id):
         raise ApiError(409, str(e))
 
 
+def social_status(draft_id, _body):
+    return {"posts": social.posts_for(db.connect(), draft_id), "paused": social.is_paused(db.connect())}
+
+
+def social_retry(draft_id, _body):
+    """Post (or retry a failed post of) one registered draft, in the background."""
+    con = db.connect()
+    d = db.get_draft(con, draft_id)
+    if d is None or d["status"] != "published":
+        raise ApiError(409, "Only drafts registered in the store can be posted.")
+    if social.is_paused(con):
+        raise ApiError(409, "Social posting is paused.")
+    social.start(draft_id, retry=True)
+    return {"message": "Posting started. Results appear in the activity log within a minute or two."}
+
+
 def source(_query, body):
     con = db.connect()
     return sourcing.run(con, str(body.get("keyword") or ""), str(body.get("market") or "dome"),
@@ -177,6 +194,7 @@ POST_ROUTES = {"/api/drafts/generate": generate_drafts, "/api/ask": ask, "/api/s
 DECISION = re.compile(r"^/api/drafts/(\d+)/(approve|reject)$")
 LIST = re.compile(r"^/api/drafts/(\d+)/list$")
 CATEGORIES = re.compile(r"^/api/drafts/(\d+)/categories$")
+SOCIAL = re.compile(r"^/api/drafts/(\d+)/social$")
 
 
 # ---------------------------------------------------------------- HTTP plumbing
@@ -239,6 +257,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api(GET_ROUTES[url.path], parse_qs(url.query), {"_user": user})
         elif CATEGORIES.match(url.path):
             self._api(category_options, int(CATEGORIES.match(url.path).group(1)))
+        elif SOCIAL.match(url.path):
+            self._api(social_status, int(SOCIAL.match(url.path).group(1)), {})
         elif url.path.startswith("/api/"):
             self._send(404, {"error": "Unknown API path"})
         else:
@@ -263,6 +283,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api(decide, int(match.group(1)), match.group(2), body)
         elif LIST.match(url.path):
             self._api(list_in_store, int(LIST.match(url.path).group(1)), body)
+        elif SOCIAL.match(url.path):
+            self._api(social_retry, int(SOCIAL.match(url.path).group(1)), body)
         elif url.path in POST_ROUTES:
             self._api(POST_ROUTES[url.path], {}, body)
         else:
