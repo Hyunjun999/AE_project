@@ -182,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
             if hmac.compare_digest(password.encode(), APP_PASSWORD.encode()):
                 return name.strip() or REVIEWER
         self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="Store desk", charset="UTF-8"')
+        self.send_header("WWW-Authenticate", 'Basic realm="Agentic desk", charset="UTF-8"')
         self.send_header("Content-Length", "0")
         self.end_headers()
         return None

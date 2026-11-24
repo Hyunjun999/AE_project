@@ -12,3 +12,4 @@ __pycache__/
 
 server.log
 *.md
+tunnel.log

@@ -1,4 +1,4 @@
-/* Store desk. Look: shipping labels. Navy ink on white labels, yellow packing tape for attention. */
+/* Agentic desk. Look: shipping labels. Navy ink on white labels, yellow packing tape for attention. */
 
 :root {
   --fog: #e9eef1;
@@ -50,7 +50,9 @@ button, input, select { font: inherit; color: inherit; }
   top: 0;
   height: 100vh;
 }
-.brand { display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s2); }
+.brand { display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s2); color: inherit; text-decoration: none; }
+.brand:hover .brand-mark { transform: rotate(-14deg); }
+.brand:focus-visible { outline: 2px solid var(--tape); outline-offset: 4px; border-radius: 4px; }
 .brand-mark { width: 26px; height: 18px; background: var(--tape); transform: rotate(-8deg); border-radius: 2px; }
 .brand-name { font-family: var(--display); font-weight: 800; font-size: 1.35rem; letter-spacing: -0.01em; }
 

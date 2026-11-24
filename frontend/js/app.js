@@ -1,4 +1,4 @@
-/* Store desk: plain JavaScript, no build step. Talks to the backend under /api.
+/* Agentic desk: plain JavaScript, no build step. Talks to the backend under /api.
    On github.io there is no backend, so the page reads js/snapshot.js (written by backend/publish.py)
    and every action is switched off. */
 
@@ -628,7 +628,7 @@ async function route() {
     else a.removeAttribute('aria-current');
   });
   if (PUBLIC && !state.snap) {
-    view.replaceChildren(head('Store desk'), h('div', { class: 'empty' }, h('h3', {}, 'No data has been published yet'),
+    view.replaceChildren(head('Agentic desk'), h('div', { class: 'empty' }, h('h3', {}, 'No data has been published yet'),
       h('p', {}, 'The team publishes the desk\'s data from its own machine. Please check back shortly.')));
     return;
   }
