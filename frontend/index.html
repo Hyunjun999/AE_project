@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Store desk</title>
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Store desk</span>
+    </div>
+
+    <nav class="nav" aria-label="Sections">
+      <a href="#/today" data-view="today">Today</a>
+      <a href="#/approvals" data-view="approvals">Approvals <span class="count" id="nav-pending" hidden></span></a>
+      <a href="#/store" data-view="store">Store</a>
+      <a href="#/price" data-view="price">Price check</a>
+      <a href="#/ask" data-view="ask">Ask the agent</a>
+      <a href="#/activity" data-view="activity">Activity</a>
+    </nav>
+
+    <div class="meter" id="meter">
+      <div class="meter-head">
+        <span>Tokens used this week</span>
+        <span id="meter-num">–</span>
+      </div>
+      <div class="meter-track" role="img" aria-label="Token budget used" id="meter-track"><span id="meter-fill"></span></div>
+      <div class="meter-foot" id="meter-foot"></div>
+    </div>
+  </aside>
+
+  <main id="view" tabindex="-1"></main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

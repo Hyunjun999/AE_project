@@ -1,0 +1,11 @@
+# secrets and local state: never commit these
+.env
+.token.json
+agent.db
+agent.db.bak-*
+exports/
+check_log.txt
+
+# python
+__pycache__/
+*.pyc

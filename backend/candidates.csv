@@ -1,0 +1,4 @@
+supplier,item_id,name,cost,shipping,material,size,options,keyword1,keyword2,keyword3,target_price
+example,EX-001,반려동물 반밀폐 돔형 하우스 쿠션,9800,3000,극세사/솜,45x45x40cm,그레이|베이지,강아지 숨숨집,고양이 겨울 하우스,소형견 방석,17900
+example,EX-002,실리콘 접이식 반려동물 물그릇,2100,3000,실리콘,350ml,블루|핑크,강아지 휴대용 물그릇,산책 물통,접이식 식기,7900
+example,EX-003,반려동물 빗 죽은털 제거 브러쉬,6000,3000,스테인리스/ABS,18cm,단일,강아지 빗,고양이 죽은털 제거,브러쉬,9900
