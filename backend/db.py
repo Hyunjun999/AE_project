@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS chats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL, question TEXT NOT NULL, answer TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS social_posts (       -- one row per draft and platform; UNIQUE prevents double posts
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    draft_id INTEGER NOT NULL REFERENCES drafts(id),
+    platform TEXT NOT NULL,                     -- 'instagram' or 'youtube'
+    status TEXT NOT NULL,                       -- posting / posted / failed
+    external_id TEXT, url TEXT, error TEXT, caption TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE (draft_id, platform)
+);
 """
 
 ADDED_COLUMNS = {"candidates": {"extra": "TEXT"}, "drafts": {"reason": "TEXT", "listing": "TEXT"}}   # added after the first release
