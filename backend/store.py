@@ -47,7 +47,9 @@ def _fetch():
                 products.append({
                     "no": item.get("originProductNo"),
                     "name": ch.get("name"),
-                    "status": ch.get("statusType"),
+                    # on sale but with its display off (e.g. just listed by the desk) counts as hidden, not on sale
+                    "status": "HIDDEN" if ch.get("statusType") == "SALE" and ch.get("channelProductDisplayStatusType") == "SUSPENSION"
+                              else ch.get("statusType"),
                     "price": ch.get("salePrice"),
                     "stock": ch.get("stockQuantity"),
                 })

@@ -37,7 +37,7 @@ function icon(name) {
 
 const won = (n) => Number(n).toLocaleString('en-US');
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-const STATUS = { SALE: 'On sale', SUSPENSION: 'Suspended', OUTOFSTOCK: 'Out of stock', WAIT: 'Waiting', CLOSE: 'Closed' };
+const STATUS = { SALE: 'On sale', HIDDEN: 'Hidden', SUSPENSION: 'Suspended', OUTOFSTOCK: 'Out of stock', WAIT: 'Waiting', CLOSE: 'Closed' };
 const statusName = (s) => STATUS[s] || s;
 
 async function api(path, options = {}) {
@@ -335,7 +335,8 @@ function storeBar(store) {
 // ---------------------------------------------------------------- Approvals
 async function approvals() {
   if (state.snap) return approvalsReadOnly();
-  const [list] = await Promise.all([api('/api/drafts?status=pending'), refreshOverview()]);
+  const [list, ready, listed] = await Promise.all([api('/api/drafts?status=pending'), api('/api/drafts?status=approved'),
+    api('/api/drafts?status=published'), refreshOverview()]);
   const maxTitle = state.overview.rules.max_title;
 
   const nodes = [head('Approvals',
@@ -356,7 +357,83 @@ async function approvals() {
   } else {
     nodes.push(h('div', { class: 'ticket-grid' }, list.map((d) => ticket(d, maxTitle))));
   }
+
+  if (ready.length) {
+    nodes.push(h('h2', {}, `Ready to list (${ready.length})`),
+      h('p', { class: 'panel-sub' }, 'Approved drafts. Choose the Naver category and register. The product goes up hidden; check it in the store centre, then switch it on there.'),
+      h('div', { class: 'ticket-grid' }, ready.map(listCard)));
+  }
+  if (listed.length) {
+    nodes.push(h('h2', {}, `In the store (${listed.length})`), h('div', { class: 'ticket-grid' }, listed.map(listedCard)));
+  }
   view.replaceChildren(...nodes);
+}
+
+const STORE_CENTRE = 'https://sell.smartstore.naver.com/#/products/origin-list';
+
+function cardHead(d, label) {
+  const extra = d.extra || {};
+  return [
+    h('div', { class: 'ticket-top' }, h('span', {}, label),
+      extra.url ? h('a', { href: extra.url, target: '_blank', rel: 'noopener' }, `${d.supplier} / ${d.item_id}`) : h('span', {}, `${d.supplier} / ${d.item_id}`)),
+    h('div', { class: 'ticket-main' },
+      extra.thumb ? h('img', { class: 'ticket-pic small', src: extra.thumb, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer' }) : null,
+      h('div', { class: 'ticket-text' },
+        h('p', { class: 'list-title' }, d.title),
+        h('p', { class: 'source-name' }, `${won(d.price)} KRW · ${d.margin_pct}% margin · approved by ${d.decided_by || 'the team'}`))),
+  ];
+}
+
+// An approved draft: pick the Naver category, then register it hidden.
+function listCard(d) {
+  const select = h('select', { 'aria-label': `Naver category for draft ${d.id}`, disabled: true }, h('option', { value: '' }, 'Finding categories…'));
+  const custom = h('input', { type: 'text', inputmode: 'numeric', placeholder: 'Category id, e.g. 50006668', hidden: true, 'aria-label': 'Naver category id' });
+  const hint = h('p', { class: 'list-hint' });
+  const button = h('button', { class: 'btn primary', disabled: true }, 'Register in store (hidden)');
+  const note = h('span', { class: 'note' });
+  const chosen = () => (select.value === 'other' ? custom.value.trim() : select.value);
+  const sync = () => { custom.hidden = select.value !== 'other'; button.disabled = !/^\d{5,}$/.test(chosen()); };
+
+  api(`/api/drafts/${d.id}/categories`).then((r) => {
+    select.replaceChildren(...r.options.map((o, i) => h('option', { value: o.id, selected: i === 0 }, o.name)),
+      h('option', { value: 'other' }, 'Another category (type its id)'));
+    select.disabled = false;
+    hint.textContent = r.supplier_category ? `Supplier files it under: ${r.supplier_category}` : '';
+    sync();
+  }).catch((err) => { select.replaceChildren(h('option', { value: 'other' }, 'Type a category id')); select.disabled = false; hint.textContent = err.message; sync(); });
+  select.addEventListener('change', sync);
+  custom.addEventListener('input', sync);
+
+  button.addEventListener('click', async () => {
+    button.disabled = select.disabled = true;
+    note.textContent = 'Copying images to Naver and registering. This takes up to a minute.';
+    try {
+      const r = await api(`/api/drafts/${d.id}/list`, { body: { category_id: chosen() } });
+      toast(r.message);
+      await approvals();
+    } catch (err) {
+      note.textContent = '';
+      toast(err.message, true);
+      select.disabled = false; sync();
+    }
+  });
+
+  return h('article', { class: 'ticket' },
+    h('div', { class: 'ticket-body' }, ...cardHead(d, `Draft ${d.id}, approved`),
+      h('div', { class: 'list-pick' }, h('label', {}, 'Naver category'), select, custom, hint)),
+    h('div', { class: 'ticket-stub' }, button, note));
+}
+
+function listedCard(d) {
+  const l = d.listing || {};
+  return h('article', { class: 'ticket' },
+    h('div', { class: 'ticket-body' }, ...cardHead(d, `Draft ${d.id}, in the store`),
+      h('div', { class: 'listed' },
+        h('span', { class: 'pill' }, 'Hidden'),
+        h('span', {}, `Product ${l.origin_product_no || '–'}`),
+        l.listed_at ? h('span', { class: 'muted' }, `registered ${when(l.listed_at)}${l.listed_by ? ` by ${l.listed_by}` : ''}`) : null),
+      h('p', { class: 'list-hint' }, 'Check the page in the store centre, then switch its display on there.')),
+    h('div', { class: 'ticket-stub' }, h('a', { class: 'btn', href: STORE_CENTRE, target: '_blank', rel: 'noopener', style: 'text-decoration:none' }, 'Open the store centre')));
 }
 
 async function approvalsReadOnly() {
@@ -453,11 +530,7 @@ function ticket(d, maxTitle) {
       const result = await api(`/api/drafts/${d.id}/${action}`, { body });
       toast(result.message);
       node.classList.add('leaving');
-      setTimeout(async () => {
-        node.remove();
-        await refreshOverview();
-        if (!view.querySelector('.ticket')) approvals();
-      }, 260);
+      setTimeout(() => { approvals().catch((e) => toast(e.message, true)); }, 260);   // an approved draft moves to "Ready to list"
     } catch (err) { toast(err.message, true); reject.disabled = false; sync(); }
   };
   approve.addEventListener('click', () => send('approve'));
@@ -498,6 +571,7 @@ async function sourcing() {
     const keyword = h('input', { type: 'text', id: 'kw', placeholder: '강아지 발톱깎이', autocomplete: 'off' });
     const market = h('select', { id: 'market' }, h('option', { value: 'dome' }, 'Domeggook (bulk)'), h('option', { value: 'supply' }, 'Domeme (single units)'));
     const picks = h('select', { id: 'picks' }, [1, 2, 3, 4, 5].map((n) => h('option', { value: n, selected: n === 3 }, n)));
+    const moq = h('select', { id: 'moq' }, [[1, '1 unit only'], [3, 'Up to 3'], [10, 'Up to 10']].map(([n, label]) => h('option', { value: n, selected: n === 1 }, label)));
     const status = h('p', { class: 'form-note', 'aria-live': 'polite' });
     const go = async (useLlm, button) => {
       if (!keyword.value.trim()) { keyword.focus(); return; }
@@ -505,7 +579,7 @@ async function sourcing() {
       buttons.forEach((b) => { b.disabled = true; });
       status.textContent = 'Searching the supplier and checking each item. This takes a few seconds.';
       try {
-        const r = await api('/api/source', { body: { keyword: keyword.value, market: market.value, picks: Number(picks.value), look: 10, use_llm: useLlm } });
+        const r = await api('/api/source', { body: { keyword: keyword.value, market: market.value, picks: Number(picks.value), look: 20, max_moq: Number(moq.value), use_llm: useLlm } });
         const problem = r.events.find((e) => e.kind === 'error');
         toast(problem ? problem.message : `${plural(r.created, 'draft', 'drafts')} sent to Approvals`, Boolean(problem));
         state.lastSourcing = r.events;
@@ -515,6 +589,7 @@ async function sourcing() {
     const form = h('form', { class: 'source-form', onsubmit: (e) => { e.preventDefault(); go(true); } },
       h('div', { class: 'field grow' }, h('label', { for: 'kw' }, 'What to look for'), keyword),
       h('div', { class: 'field' }, h('label', { for: 'market' }, 'Where'), market),
+      h('div', { class: 'field' }, h('label', { for: 'moq' }, 'Minimum order'), moq),
       h('div', { class: 'field' }, h('label', { for: 'picks' }, 'Picks'), picks),
       h('div', { class: 'source-go' },
         h('button', { class: 'btn primary', type: 'submit' }, 'Ask the agent to pick'),

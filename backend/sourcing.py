@@ -83,8 +83,11 @@ def call(params):
     return body["domeggook"]
 
 
-def search(keyword, market="dome", size=10):
-    data = call({"ver": "4.1", "mode": "getItemList", "market": market, "kw": keyword, "sz": size, "pg": 1})
+def search(keyword, market="dome", size=10, max_moq=None):
+    params = {"ver": "4.1", "mode": "getItemList", "market": market, "kw": keyword, "sz": size, "pg": 1}
+    if max_moq:
+        params.update(mnq=1, mxq=max_moq)   # ask Domeggook for items whose minimum order fits
+    data = call(params)
     items = (data.get("list") or {}).get("item") or []
     if isinstance(items, dict):   # a single result comes back as one object
         items = [items]
@@ -121,6 +124,7 @@ def detail(no):
     return {
         "on_sale": dig("basis.status") == "판매중",
         "images_usable": truthy(dig("desc.license.usable")),
+        "deny_market": truthy(dig("etc.denyMarket")),   # the supplier forbids resale on open markets
         "origin": dig("detail.country") or "", "seller_type": dig("seller.type") or "",
         "resale_min": number(resale.get("minumum") or resale.get("minimum")) if isinstance(resale, dict) else 0,
         "certified": bool(dig("detail.safetyCert")),
@@ -130,7 +134,7 @@ def detail(no):
 
 
 # ---------------------------------------------------------------- rules and picking
-def first_check(item, con, supplier):
+def first_check(item, con, supplier, max_moq=MAX_MOQ):
     """Reasons to drop an item using only the search result. Empty string means it may continue."""
     if item["business_only"]:
         return "only businesses may buy it"
@@ -138,8 +142,8 @@ def first_check(item, con, supplier):
         return "adults-only item"
     if item["cost"] <= 0:
         return "no usable price"
-    if item["moq"] > MAX_MOQ:
-        return f"minimum order is {item['moq']} units (limit {MAX_MOQ})"
+    if item["moq"] > max_moq:
+        return f"minimum order is {item['moq']} units (limit {max_moq})"
     row = con.execute("SELECT id FROM candidates WHERE supplier = ? AND item_id = ?", (supplier, str(item["no"]))).fetchone()
     if row and db.has_open_draft(con, row["id"]):
         return "already drafted"
@@ -194,7 +198,7 @@ def llm_picks(con, pool, keyword, how_many):
 
 
 # ---------------------------------------------------------------- one run
-def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None):
+def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None, max_moq=None):
     """Search, filter, pick and queue drafts. Returns {'events', 'created', 'items', 'total', ...}. Never raises."""
     keyword = " ".join(keyword.split())
     events, items = [], []
@@ -210,9 +214,10 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None):
     if market not in MARKETS:
         return stop(f"Unknown market '{market}'.")
     look, picks = max(1, min(int(look), 30)), max(1, min(int(picks), 5))
+    max_moq = MAX_MOQ if max_moq in (None, "") else max(1, min(int(max_moq), 50))
 
     try:
-        result["total"], found = search(keyword, market, look)
+        result["total"], found = search(keyword, market, look, max_moq)
     except SourcingError as e:
         return stop(str(e))
     result["looked"] = len(found)
@@ -223,7 +228,7 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None):
     for item in found:
         view = {k: item[k] for k in ("no", "name", "cost", "shipping", "landed", "floor", "moq", "thumb", "url")}
         items.append(view)
-        why = first_check(item, con, supplier)
+        why = first_check(item, con, supplier, max_moq)
         if not why:
             try:
                 time.sleep(PAUSE)
@@ -235,6 +240,8 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None):
                     why = "no longer on sale"
                 elif not info["images_usable"]:
                     why = "the supplier does not allow its images to be reused"
+                elif info["deny_market"]:
+                    why = "the supplier does not allow resale on open markets"
         if why:
             view.update(outcome="dropped", why=why)
         else:
@@ -293,10 +300,12 @@ if __name__ == "__main__":
     parser.add_argument("--look", type=int, default=10, help="how many search results to look at (1-30)")
     parser.add_argument("--picks", type=int, default=3, help="how many to draft (1-5)")
     parser.add_argument("--no-llm", action="store_true", help="pick the cheapest instead of asking the agent")
+    parser.add_argument("--max-moq", type=int, help=f"drop items whose minimum order is above this (default {MAX_MOQ})")
     args = parser.parse_args()
 
     connection = db.connect()
-    outcome = run(connection, " ".join(args.keyword), args.market, args.look, args.picks, use_llm=not args.no_llm)
+    outcome = run(connection, " ".join(args.keyword), args.market, args.look, args.picks, use_llm=not args.no_llm,
+                  by="cli", max_moq=args.max_moq)
     for event in outcome["events"]:
         print(f"{event['kind'].upper()}: {event['message']}")
     print(f"Domeggook has {outcome['total']} items; looked at {outcome['looked']}; drafted {outcome['created']}.")

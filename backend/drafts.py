@@ -196,4 +196,5 @@ def to_view(d):
         "flags": flags, "blocked": any(is_hard(f) for f in flags),
         "decided_by": d["decided_by"], "decided_at": d["decided_at"],
         "reason": d["reason"], "extra": extra_of(d), "lowest_price": lowest_price(d),
+        "listing": json.loads(d["listing"]) if d["listing"] else None,
     }

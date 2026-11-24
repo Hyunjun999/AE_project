@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 import agent
 import db
 import drafts
+import listing
 import llm
 import orders
 import sourcing
@@ -92,10 +93,28 @@ def decide(draft_id, action, body):
     return {"message": message, "drafts": db.draft_counts(con)}
 
 
+def list_in_store(draft_id, body):
+    """Register one approved draft in the store with its display off."""
+    try:
+        result = listing.register(db.connect(), draft_id, body.get("category_id"), by=body.get("_user"))
+    except (listing.ListingError, sourcing.SourcingError) as e:
+        raise ApiError(409, str(e))
+    return {"message": f"Registered as product {result['origin_product_no']}, hidden until you switch it on.",
+            "listing": result}
+
+
+def category_options(draft_id):
+    try:
+        return listing.category_options(db.connect(), draft_id)
+    except (listing.ListingError, sourcing.SourcingError) as e:
+        raise ApiError(409, str(e))
+
+
 def source(_query, body):
     con = db.connect()
     return sourcing.run(con, str(body.get("keyword") or ""), str(body.get("market") or "dome"),
-                        body.get("look") or 10, body.get("picks") or 3, use_llm=bool(body.get("use_llm")), by=body.get("_user"))
+                        body.get("look") or 10, body.get("picks") or 3, use_llm=bool(body.get("use_llm")), by=body.get("_user"),
+                        max_moq=body.get("max_moq"))
 
 
 def sourcing_runs(_query, _body):
@@ -156,6 +175,8 @@ GET_ROUTES = {"/api/overview": overview, "/api/drafts": list_drafts, "/api/price
               "/api/activity": activity, "/api/egress-ip": egress_ip, "/api/sourcing": sourcing_runs}
 POST_ROUTES = {"/api/drafts/generate": generate_drafts, "/api/ask": ask, "/api/source": source}
 DECISION = re.compile(r"^/api/drafts/(\d+)/(approve|reject)$")
+LIST = re.compile(r"^/api/drafts/(\d+)/list$")
+CATEGORIES = re.compile(r"^/api/drafts/(\d+)/categories$")
 
 
 # ---------------------------------------------------------------- HTTP plumbing
@@ -216,6 +237,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if url.path in GET_ROUTES:
             self._api(GET_ROUTES[url.path], parse_qs(url.query), {"_user": user})
+        elif CATEGORIES.match(url.path):
+            self._api(category_options, int(CATEGORIES.match(url.path).group(1)))
         elif url.path.startswith("/api/"):
             self._send(404, {"error": "Unknown API path"})
         else:
@@ -238,6 +261,8 @@ class Handler(BaseHTTPRequestHandler):
         match = DECISION.match(url.path)
         if match:
             self._api(decide, int(match.group(1)), match.group(2), body)
+        elif LIST.match(url.path):
+            self._api(list_in_store, int(LIST.match(url.path).group(1)), body)
         elif url.path in POST_ROUTES:
             self._api(POST_ROUTES[url.path], {}, body)
         else:

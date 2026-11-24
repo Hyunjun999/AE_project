@@ -1,10 +1,11 @@
 """SQLite store shared by all modules: candidates, drafts, token ledger, action log."""
 import datetime as dt
 import json
+import os
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "agent.db"
+DB_PATH = Path(os.getenv("DESK_DB") or Path(__file__).parent / "agent.db")   # DESK_DB: a copy, for trying things out
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS candidates (
@@ -57,7 +58,7 @@ CREATE TABLE IF NOT EXISTS chats (
 );
 """
 
-ADDED_COLUMNS = {"candidates": {"extra": "TEXT"}, "drafts": {"reason": "TEXT"}}   # added after the first release
+ADDED_COLUMNS = {"candidates": {"extra": "TEXT"}, "drafts": {"reason": "TEXT", "listing": "TEXT"}}   # added after the first release
 
 DRAFT_SELECT = (
     "SELECT d.*, c.supplier, c.item_id, c.name, c.cost, c.shipping, c.keyword1, c.extra "
@@ -192,6 +193,13 @@ def set_decision(con, draft_id, status, decided_by, title=None, flags=None, pric
                 (status, decided_by, now(), draft_id))
     con.commit()
     log_action(con, f"draft_{status}", f"draft_id={draft_id} by={decided_by}")
+
+
+def set_listed(con, draft_id, listing):
+    """Mark an approved draft as registered in the store, keeping Naver's product numbers."""
+    con.execute("UPDATE drafts SET status = 'published', listing = ? WHERE id = ?",
+                (json.dumps(listing, ensure_ascii=False), draft_id))
+    con.commit()
 
 
 def log_tokens(con, model, purpose, usage):

@@ -209,8 +209,9 @@ input:focus { border-color: var(--ink); outline: none; box-shadow: 0 0 0 3px rgb
 .panel-link .ico { width: 15px; height: 15px; }
 
 /* ---------------------------------------------------------------- tickets (drafts) */
-.ticket-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 540px), 1fr)); gap: var(--s5); align-items: start; }
-.ticket { overflow: hidden; transition: box-shadow 0.2s ease; }
+.ticket-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 540px), 1fr)); gap: var(--s5); align-items: stretch; }
+.ticket { overflow: hidden; transition: box-shadow 0.2s ease; display: flex; flex-direction: column; }
+.ticket-body { flex: 1; }
 .ticket:hover { box-shadow: var(--shadow-lift); }
 .ticket-body { padding: var(--s4) var(--s5) var(--s5); }
 .ticket-stub { border-top: 2px dashed var(--rule); background: #fafbfd; padding: var(--s3) var(--s5); display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
@@ -501,3 +502,16 @@ select:focus { border-color: var(--ink); outline: none; }
   .ring-fill, .bar i, .belt-track { animation: none; }
   .parcel { animation: none; left: calc(8% + var(--i) * 20%); }
 }
+
+/* ---------------------------------------------------------------- listing in the store */
+.ticket-pic.small { width: 72px; height: 72px; }
+.list-title { font-weight: 600; font-size: 1.05rem; }
+.list-pick { display: flex; flex-direction: column; gap: 6px; margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.list-pick label { font-weight: 600; font-size: 0.93rem; }
+.list-pick select { width: 100%; }
+.list-hint { color: var(--slate); font-size: 0.88rem; margin-top: var(--s2); }
+.listed { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--line); font-weight: 600; }
+.listed .pill { background: var(--tape-tint); color: #7a5a00; }
+.listed .muted { font-weight: 400; font-size: 0.9rem; }
+a.btn { color: var(--ink); text-decoration: none; display: inline-block; }
+a.btn.primary { color: #fff; }
