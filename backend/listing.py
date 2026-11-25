@@ -1,22 +1,25 @@
 """Register an approved draft as a product in the Naver smart store.
 
-The product goes up with its display switched off (SUSPENSION), so nobody can see or buy it until
-a person checks it in the store centre and switches it on. Nothing here runs unless a person asks
-for one approved draft to be listed.
+Nothing here runs unless a person approves one draft and asks for it to be listed. The product goes up on
+display ("ON") only when the person asked for that (the desk's "Show in the store right away" box);
+otherwise it is hidden (SUSPENSION) until someone switches it on in the store centre.
 
 Steps for one draft:
-  1. Read the item again on Domeggook: it must still be on sale, allow open-market resale and allow
+  1. Search the store for our seller code, so a product an earlier attempt created is recorded, not doubled.
+  2. Read the item again on Domeggook: it must still be on sale, allow open-market resale and allow
      its images to be reused.
-  2. Copy the store-wide settings (delivery, return address, A/S) from an existing product of ours.
-  3. Upload the main image and the detail images to Naver's image server.
-  4. POST /v2/products with the display off.
+  3. Copy the store-wide settings (delivery, return address, A/S) from an existing product of ours.
+  4. Upload the main image and the detail images to Naver's image server.
+  5. POST /v2/products, with the approved introduction above the supplier's pictures.
 
 Command line:
-    python listing.py 3 --categories          # suggest Naver categories for draft 3
-    python listing.py 3 --dry-run             # build the request and print it; nothing is sent
-    python listing.py 3 --category 50006668   # register it (hidden)
+    python listing.py 3 --categories                 # suggest Naver categories for draft 3
+    python listing.py 3 --dry-run                    # build the request and print it; nothing is sent
+    python listing.py 3 --category 50006668          # register it hidden
+    python listing.py 3 --category 50006668 --show   # register it on display
 """
 import argparse
+import html
 import json
 import os
 import re
@@ -241,9 +244,9 @@ def upload_images(urls):
 IMG_SRC = re.compile(r"""(<img\b[^>]*?\bsrc\s*=\s*["'])([^"']+)(["'])""", re.I)
 
 
-def detail_images(html):
+def detail_images(supplier_html):
     seen = []
-    for m in IMG_SRC.finditer(html):
+    for m in IMG_SRC.finditer(supplier_html):
         url = m.group(2).strip()
         if url.startswith("//"):
             url = "https:" + url
@@ -252,14 +255,26 @@ def detail_images(html):
     return seen
 
 
-def detail_content(html, hosted):
-    """The supplier's description with its images pointed at Naver's copies."""
+def intro_html(title, description):
+    """The approved introduction as a short block above the supplier's pictures ('' when there is none)."""
+    lines = [line.strip() for line in (description or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    items = "".join(f'<li style="margin:4px 0">{html.escape(line)}</li>' for line in lines)
+    return ('<div style="max-width:860px;margin:0 auto 32px;padding:24px 28px;text-align:left;font-size:16px;'
+            'line-height:1.7;border:1px solid #e5e7eb;border-radius:12px">'
+            f'<h3 style="margin:0 0 12px;font-size:20px">{html.escape(title)}</h3>'
+            f'<ul style="margin:0;padding-left:20px">{items}</ul></div>')
+
+
+def detail_content(supplier_html, hosted, intro=""):
+    """Our introduction, then the supplier's description with its images pointed at Naver's copies."""
     def swap(m):
         url = m.group(2).strip()
         url = "https:" + url if url.startswith("//") else url
         return m.group(1) + hosted.get(url, url) + m.group(3)
-    body = re.sub(r"<script\b.*?</script>", "", html, flags=re.I | re.S)
-    return '<div style="text-align:center">' + IMG_SRC.sub(swap, body) + "</div>"
+    body = re.sub(r"<script\b.*?</script>", "", supplier_html, flags=re.I | re.S)
+    return intro + '<div style="text-align:center">' + IMG_SRC.sub(swap, body) + "</div>"
 
 
 # ---------------------------------------------------------------- store settings and the request
@@ -311,7 +326,7 @@ def allowed_tags(tags):
     return [t for t in tags if t.replace(" ", "") not in blocked and t not in blocked]
 
 
-def build_request(d, item, category_id, settings, image_url, detail_html, tags):
+def build_request(d, item, category_id, settings, image_url, detail_html, tags, display="ON"):
     phone = settings["afterServiceInfo"].get("afterServiceTelephoneNumber") or NOT_STATED
     landed = d["cost"] + d["shipping"]
     tags = [{"text": t} for t in tags]
@@ -356,7 +371,7 @@ def build_request(d, item, category_id, settings, image_url, detail_html, tags):
         },
         "smartstoreChannelProduct": {
             "naverShoppingRegistration": True,
-            "channelProductDisplayStatusType": "SUSPENSION",   # hidden until a person switches it on
+            "channelProductDisplayStatusType": display,   # ON: visible at once; SUSPENSION: hidden until switched on
             "storeKeepExclusiveProduct": False,
         },
     }
@@ -422,11 +437,13 @@ def save_listed(con, draft_id, listing, by, how):
     return listing
 
 
-def register(con, draft_id, category_id, by=None, dry_run=False):
-    """List one approved draft with its display off. Returns a dict describing what happened.
+def register(con, draft_id, category_id, by=None, dry_run=False, display="SUSPENSION"):
+    """List one approved draft, on display ("ON") or hidden ("SUSPENSION"). Returns a dict describing what happened.
 
     Safe to repeat: the store is searched for our seller code first, so a product that an earlier attempt
     created (its answer lost to a timeout) is recorded instead of being created a second time."""
+    if display not in ("ON", "SUSPENSION"):
+        raise ListingError(f"Unknown display setting '{display}'.")
     d = approved_draft(con, draft_id)
     check_category(category_id)
     existing = find_listed(d["item_id"])
@@ -455,7 +472,8 @@ def register(con, draft_id, category_id, by=None, dry_run=False):
         if not main:
             raise ListingError("Naver did not accept the main image.")
     tags = allowed_tags(json.loads(d["tags"] or "[]"))
-    request = build_request(d, item, category_id, settings, main, detail_content(item["detail_html"], hosted), tags)
+    detail = detail_content(item["detail_html"], hosted, intro_html(d["title"], d["description"]))
+    request = build_request(d, item, category_id, settings, main, detail, tags, display)
     if dry_run:
         return {"dry_run": True, "request": request, "detail_images": len(pictures)}
 
@@ -485,11 +503,11 @@ def register(con, draft_id, category_id, by=None, dry_run=False):
     listing = {
         "origin_product_no": answer.get("originProductNo"),
         "channel_product_no": answer.get("smartstoreChannelProductNo"),
-        "category_id": str(category_id), "display": "SUSPENSION",
+        "category_id": str(category_id), "display": display,
         "listed_at": db.now(), "listed_by": by,
         "detail_images_hosted": sum(1 for p in pictures if p in hosted), "detail_images": len(pictures),
     }
-    return save_listed(con, draft_id, listing, by, "hidden")
+    return save_listed(con, draft_id, listing, by, "on display" if display == "ON" else "hidden")
 
 
 if __name__ == "__main__":
@@ -498,13 +516,15 @@ if __name__ == "__main__":
     parser.add_argument("--category", help="Naver leaf category id")
     parser.add_argument("--categories", action="store_true", help="only suggest categories")
     parser.add_argument("--dry-run", action="store_true", help="build the request and print it; send nothing")
+    parser.add_argument("--show", action="store_true", help="put it on display at once (default: hidden)")
     args = parser.parse_args()
     con = db.connect()
     try:
         if args.categories:
             print(json.dumps(category_options(con, args.draft_id), ensure_ascii=False, indent=2))
         else:
-            result = register(con, args.draft_id, args.category, by="cli", dry_run=args.dry_run)
+            result = register(con, args.draft_id, args.category, by="cli", dry_run=args.dry_run,
+                              display="ON" if args.show else "SUSPENSION")
             if args.dry_run:
                 req = json.loads(json.dumps(result["request"]))
                 req["originProduct"]["detailContent"] = f"<{len(req['originProduct']['detailContent'])} chars>"

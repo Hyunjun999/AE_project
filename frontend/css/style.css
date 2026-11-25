@@ -516,6 +516,16 @@ select:focus { border-color: var(--ink); outline: none; }
 .list-pick label { font-weight: 600; font-size: 0.93rem; }
 .list-pick select { width: 100%; }
 .list-hint { color: var(--slate); font-size: 0.88rem; margin-top: var(--s2); }
+.desc-set { display: flex; flex-direction: column; gap: 6px; margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--line); }
+.desc-set label, .desc-label { font-weight: 600; font-size: 0.93rem; }
+.desc-head { display: flex; justify-content: space-between; align-items: center; gap: var(--s2); }
+.btn.small { padding: 4px 10px; font-size: 0.85rem; }
+.desc-set small { color: var(--slate); font-size: 0.85rem; }
+.desc-set textarea { width: 100%; font: inherit; line-height: 1.6; padding: 9px 12px; border: 1.5px solid var(--rule); border-radius: var(--radius-sm); background: var(--label); resize: vertical; }
+.desc-set textarea:focus { border-color: var(--ink); outline: none; box-shadow: 0 0 0 3px rgba(20, 35, 59, 0.08); }
+.desc-read { white-space: pre-line; color: var(--ink); background: var(--fog); padding: var(--s2) var(--s3); border-radius: 8px; margin: 0; }
+.show-now { display: flex; align-items: center; gap: 8px; margin-top: var(--s3); font-weight: 600; font-size: 0.93rem; cursor: pointer; }
+.show-now input { width: 17px; height: 17px; accent-color: var(--ink); }
 .list-hint.warn { color: #8c1733; background: var(--fail-tint); padding: var(--s2) var(--s3); border-radius: 8px; }
 .listed { display: flex; gap: var(--s3); align-items: center; flex-wrap: wrap; margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--line); font-weight: 600; }
 .listed .pill { background: var(--tape-tint); color: #7a5a00; }

@@ -15,6 +15,7 @@ from price import contribution, price_floor
 CANDIDATES_CSV = Path(__file__).parent / "candidates.csv"
 BATCH = 5            # products per LLM call (instructions are shared across the batch)
 MAX_TITLE = 50       # characters
+MAX_DESCRIPTION = 600   # characters of the short introduction shown above the supplier's pictures
 LISTABLE = ("domeggook", "domeme")   # suppliers whose items listing.py can register in the store
 BANNED = ["최고", "1위", "최저가", "특가", "정품", "100%"]                       # claims we never make
 REVIEW_WORDS = ["유아", "아동", "어린이", "식품", "건강", "의료", "화장품",       # regulated or risky areas:
@@ -146,7 +147,50 @@ def lowest_price(d):
     return max(d["floor"], int(extra_of(d).get("resale_min") or 0))
 
 
-def decide(con, draft_id, action, reviewer, new_title=None, new_price=None):
+def check_description(text):
+    """Return the hard problems in a product description ([] when it may be used)."""
+    problems = [f"banned word '{w}'" for w in BANNED if w in text]
+    if len(text) > MAX_DESCRIPTION:
+        problems.append(f"longer than {MAX_DESCRIPTION} characters")
+    return problems
+
+
+DESCRIBE = ("You write a short Korean introduction for a Naver SmartStore product page: three lines, each under 40 "
+            "characters. Say what the product is, who or when it is for, and one feature. Use only what the two titles "
+            "say: no material, size, number, certification, origin or effect that they do not state, no shop or brand "
+            "names, and no superlatives. Answer with the three lines only.")
+
+
+def describe(con, draft_id, by=None):
+    """Ask the agent for a pending draft's introduction and keep it on the draft. Returns (ok, text or message)."""
+    d = db.get_draft(con, draft_id)
+    if d is None:
+        return False, f"Draft {draft_id} does not exist."
+    if d["status"] != "pending":
+        return False, f"Draft {draft_id} is already {d['status']}."
+    try:
+        text = llm.chat(con, [{"role": "system", "content": DESCRIBE},
+                              {"role": "user", "content": f"Our title: {d['title']}\nSupplier title: {d['name']}"}],
+                        purpose="description", max_tokens=300)
+    except llm.TokenCapReached as e:
+        return False, f"Weekly token cap reached. ({e})"
+    except Exception as e:  # network trouble or an empty answer
+        return False, f"The agent could not answer ({type(e).__name__}). Write the introduction yourself."
+    lines = [line.strip().lstrip("-•*· ").strip() for line in text.splitlines()]
+    description = "\n".join(line for line in lines if line)[:MAX_DESCRIPTION]
+    problems = check_description(description)
+    if not description or problems:
+        return False, "The agent's text cannot be used (" + ("; ".join(problems) or "empty") + "). Write it yourself."
+    # Only while it is still pending: if someone approved it meanwhile, this text was never reviewed.
+    saved = con.execute("UPDATE drafts SET description = ? WHERE id = ? AND status = 'pending'", (description, draft_id))
+    con.commit()
+    if saved.rowcount == 0:
+        return False, f"Draft {draft_id} was decided while the agent was writing, so its text was not saved."
+    db.log_action(con, "draft_described", f"draft_id={draft_id}" + (f" by={by}" if by else ""))
+    return True, description
+
+
+def decide(con, draft_id, action, reviewer, new_title=None, new_price=None, new_description=None):
     """Approve or reject one pending draft. Returns (ok, message)."""
     d = db.get_draft(con, draft_id)
     if d is None:
@@ -166,6 +210,13 @@ def decide(con, draft_id, action, reviewer, new_title=None, new_price=None):
     if price < lowest_price(d):
         return False, f"The price {price} is below the lowest allowed price {lowest_price(d)}."
     price_change = price if price != d["price"] else None
+    description = None if new_description is None else str(new_description).strip()
+    if description is not None:
+        problems = check_description(description)
+        if problems:
+            return False, "The description breaks a rule: " + "; ".join(problems)
+        if description == (d["description"] or ""):
+            description = None   # unchanged
 
     new_title = (new_title or "").strip()
     if new_title and new_title != d["title"]:
@@ -173,13 +224,14 @@ def decide(con, draft_id, action, reviewer, new_title=None, new_price=None):
         hard = [f for f in flags if is_hard(f)]
         if hard:
             return False, "The title breaks a hard rule: " + "; ".join(hard)
-        db.set_decision(con, draft_id, "approved", reviewer, title=new_title, flags="; ".join(flags), price=price_change)
+        db.set_decision(con, draft_id, "approved", reviewer, title=new_title, flags="; ".join(flags), price=price_change,
+                        description=description)
         return True, "Approved with the edited title" + (" and price" if price_change else "")
 
     hard = [f for f in split_flags(d["flags"]) if is_hard(f)]
     if hard:
         return False, "The title breaks a hard rule: " + "; ".join(hard) + ". Edit it or reject it."
-    db.set_decision(con, draft_id, "approved", reviewer, price=price_change)
+    db.set_decision(con, draft_id, "approved", reviewer, price=price_change, description=description)
     return True, "Approved at the price you set" if price_change else "Approved"
 
 
@@ -212,4 +264,5 @@ def to_view(d):
         "decided_by": d["decided_by"], "decided_at": d["decided_at"],
         "reason": d["reason"], "extra": extra_of(d), "lowest_price": lowest_price(d),
         "listing": json.loads(d["listing"]) if d["listing"] else None, "listable": d["supplier"] in LISTABLE,
+        "description": d["description"] or "",
     }

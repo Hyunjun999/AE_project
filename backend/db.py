@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS chats (
 );
 """
 
-ADDED_COLUMNS = {"candidates": {"extra": "TEXT"}, "drafts": {"reason": "TEXT", "listing": "TEXT"}}   # added after the first release
+ADDED_COLUMNS = {"candidates": {"extra": "TEXT"},
+                 "drafts": {"reason": "TEXT", "listing": "TEXT", "description": "TEXT"}}   # added after the first release
 
 DRAFT_SELECT = (
     "SELECT d.*, c.supplier, c.item_id, c.name, c.cost, c.shipping, c.keyword1, c.extra "
@@ -160,11 +161,11 @@ def has_open_draft(con, candidate_id):
     return row is not None
 
 
-def add_draft(con, candidate_id, title, tags, price, floor, source, flags, reason=None):
+def add_draft(con, candidate_id, title, tags, price, floor, source, flags, reason=None, description=None):
     con.execute(
-        "INSERT INTO drafts (candidate_id, title, tags, price, floor, source, flags, reason, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (candidate_id, title, json.dumps(tags, ensure_ascii=False), price, floor, source, flags, reason, now()),
+        "INSERT INTO drafts (candidate_id, title, tags, price, floor, source, flags, reason, description, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (candidate_id, title, json.dumps(tags, ensure_ascii=False), price, floor, source, flags, reason, description, now()),
     )
     con.commit()
 
@@ -184,7 +185,9 @@ def draft_counts(con):
     return counts
 
 
-def set_decision(con, draft_id, status, decided_by, title=None, flags=None, price=None):
+def set_decision(con, draft_id, status, decided_by, title=None, flags=None, price=None, description=None):
+    if description is not None:
+        con.execute("UPDATE drafts SET description = ? WHERE id = ?", (description, draft_id))
     if title is not None:
         con.execute("UPDATE drafts SET title = ?, flags = ? WHERE id = ?", (title, flags or "", draft_id))
     if price is not None:

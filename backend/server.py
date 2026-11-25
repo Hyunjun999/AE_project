@@ -89,14 +89,19 @@ LISTING_DRY_RUN = os.getenv("LISTING_DRY_RUN") == "1"   # build the store reques
 _registering, _registering_lock = set(), threading.Lock()  # drafts being sent to the store right now
 
 
-def register(con, draft_id, category_id, user):
+def display_of(body):
+    """On display only when the request asks for it ({"show": true}); anything else stays hidden."""
+    return "ON" if body.get("show") is True else "SUSPENSION"
+
+
+def register(con, draft_id, category_id, user, display="ON"):
     """Send one approved draft to the store, never the same draft twice at once. Returns (listing, message)."""
     with _registering_lock:
         if draft_id in _registering:
             raise listing.ListingError(f"Draft {draft_id} is already being registered.")
         _registering.add(draft_id)
     try:
-        result = listing.register(con, draft_id, category_id, by=user, dry_run=LISTING_DRY_RUN)
+        result = listing.register(con, draft_id, category_id, by=user, dry_run=LISTING_DRY_RUN, display=display)
     finally:
         with _registering_lock:
             _registering.discard(draft_id)
@@ -104,6 +109,8 @@ def register(con, draft_id, category_id, user):
         return result, "Dry run: the store request was built but not sent"
     if result.get("found_in_store"):
         return result, f"Store no. {result['channel_product_no']} was already in the store from an earlier attempt; the desk has recorded it"
+    if result.get("display") == "ON":
+        return result, f"Registered as store no. {result['channel_product_no']} and on display"
     return result, f"Registered as store no. {result['channel_product_no']}, hidden until you switch it on"
 
 
@@ -125,13 +132,13 @@ def decide(draft_id, action, body):
             listing.check_category(category_id)   # a bad category stops the approval too
         except listing.ListingError as e:
             raise ApiError(409, str(e))
-    ok, message = drafts.decide(con, draft_id, action, user, body.get("title"), body.get("price"))
+    ok, message = drafts.decide(con, draft_id, action, user, body.get("title"), body.get("price"), body.get("description"))
     if not ok:
         raise ApiError(409, message)
     result = {"message": message, "listed": False}
     if category_id:
         try:
-            result["listing"], listed = register(con, draft_id, category_id, user)
+            result["listing"], listed = register(con, draft_id, category_id, user, display_of(body))
             result.update(listed=True, message=f"{message}. {listed}.")
         except listing.ListingUncertain as e:   # the request went out; the store may have the product
             result.update(message=f"{message}, but {redact(e)}.")
@@ -143,14 +150,23 @@ def decide(draft_id, action, body):
 
 
 def list_in_store(draft_id, body):
-    """Register one approved draft in the store with its display off."""
+    """Register one approved draft in the store, on display unless asked to keep it hidden."""
     try:
-        result, message = register(db.connect(), draft_id, body.get("category_id"), body.get("_user"))
+        result, message = register(db.connect(), draft_id, body.get("category_id"), body.get("_user"), display_of(body))
     except listing.ListingUncertain as e:   # 502, so the page redraws and shows the draft's marker
         raise ApiError(502, redact(e))
     except (listing.ListingError, sourcing.SourcingError) as e:
         raise ApiError(409, redact(e))
     return {"message": message + ".", "listing": result}
+
+
+def describe_draft(draft_id, body):
+    """The agent writes a pending draft's introduction (about 300-400 tokens)."""
+    con = db.connect()
+    ok, text = drafts.describe(con, draft_id, body.get("_user") or REVIEWER)
+    if not ok:
+        raise ApiError(409, text)
+    return {"description": text, "tokens_used": llm.used_this_week(con), "tokens_cap": llm.WEEKLY_CAP}
 
 
 def delete_draft(draft_id, body):
@@ -238,6 +254,7 @@ POST_ROUTES = {"/api/drafts/generate": generate_drafts, "/api/ask": ask, "/api/s
 DECISION = re.compile(r"^/api/drafts/(\d+)/(approve|reject)$")
 LIST = re.compile(r"^/api/drafts/(\d+)/list$")
 DELETE = re.compile(r"^/api/drafts/(\d+)/delete$")
+DESCRIBE = re.compile(r"^/api/drafts/(\d+)/describe$")
 CATEGORIES = re.compile(r"^/api/drafts/(\d+)/categories$")
 
 
@@ -333,6 +350,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api(list_in_store, int(LIST.match(url.path).group(1)), body)
         elif DELETE.match(url.path):
             self._api(delete_draft, int(DELETE.match(url.path).group(1)), body)
+        elif DESCRIBE.match(url.path):
+            self._api(describe_draft, int(DESCRIBE.match(url.path).group(1)), body)
         elif url.path in POST_ROUTES:
             self._api(POST_ROUTES[url.path], {}, body)
         else:

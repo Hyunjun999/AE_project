@@ -43,7 +43,12 @@ SYSTEM = (
     "makes no superlative or unverifiable claim, and three Korean search tags. "
     "Supplier titles often carry another shop's name or a promotion in brackets, such as [이더블유] or (당일출고): "
     "never copy those, and never put a brand or shop name in a title or tag. "
-    'Answer with JSON only: [{"no": 123, "reason": "under 15 English words", "title": "...", "tags": ["..", "..", ".."]}]'
+    "Also write a short Korean product introduction for the product page: three lines, each under 40 characters, "
+    "separated by \\n. Say what the product is, who or when it is for, and one feature. Use only what the supplier "
+    "title says: no material, size, number, certification, origin or effect that the title does not state, and no "
+    "superlatives. "
+    'Answer with JSON only: [{"no": 123, "reason": "under 15 English words", "title": "...", "tags": ["..", "..", ".."], '
+    '"description": "line 1\\nline 2\\nline 3"}]'
 )
 
 
@@ -216,7 +221,7 @@ def llm_picks(con, pool, keyword, how_many, carried=()):
     reply = llm.chat(con, [
         {"role": "system", "content": SYSTEM},
         {"role": "user", "content": f"Search keyword: {keyword}\nPick at most {how_many}.\n{known}Candidates:\n{lines}"},
-    ], purpose="sourcing", max_tokens=160 * how_many + 60)
+    ], purpose="sourcing", max_tokens=260 * how_many + 60)
     start, end = reply.find("["), reply.rfind("]")
     rows = json.loads(reply[start:end + 1])
     known = {x["no"] for x in pool}
@@ -224,8 +229,12 @@ def llm_picks(con, pool, keyword, how_many, carried=()):
     for row in rows:
         no = number(row.get("no"), -1)
         if no in known and row.get("title") and no not in {p["no"] for p in picks}:
+            description = "\n".join(line.strip() for line in str(row.get("description") or "").splitlines() if line.strip())
+            if drafts.check_description(description):   # a banned claim or too long: leave it for a person to write
+                description = ""
             picks.append({"no": no, "reason": str(row.get("reason") or "")[:160], "title": clean_title(str(row["title"])),
-                          "tags": [str(t).strip() for t in (row.get("tags") or []) if str(t).strip()][:5], "source": "llm"})
+                          "tags": [str(t).strip() for t in (row.get("tags") or []) if str(t).strip()][:5], "source": "llm",
+                          "description": description})
     return picks[:how_many]
 
 
@@ -329,7 +338,7 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None, ma
         flags = drafts.check_title(pick["title"], {"keyword1": keyword, "name": item["name"]})
         start_price = max(item["floor"], info["resale_min"])
         db.add_draft(con, candidate_id, pick["title"], tags, start_price, item["floor"], pick["source"],
-                     "; ".join(flags), pick["reason"])
+                     "; ".join(flags), pick["reason"], pick.get("description") or None)
         views[item["no"]].update(outcome="picked", why=pick["reason"], title=pick["title"])
         result["created"] += 1
 

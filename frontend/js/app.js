@@ -113,7 +113,7 @@ function toast(message, isError = false, ms = 3200) {
 }
 
 const ACTIONS = { draft_approved: 'Draft approved', draft_rejected: 'Draft rejected', draft_deleted: 'Draft deleted',
-  draft_listed: 'Listed in the store (hidden)', drafts_generated: 'Drafts created', gate0_reject: 'Stopped at the price floor',
+  draft_listed: 'Listed in the store', draft_described: 'Introduction written by the agent', drafts_generated: 'Drafts created', gate0_reject: 'Stopped at the price floor',
   chat: 'Question asked', sourcing_run: 'Products searched' };
 
 function head(title, sub, ...actions) {
@@ -355,7 +355,7 @@ async function approvals() {
   const maxTitle = state.overview.rules.max_title;
 
   const nodes = [head('Approvals',
-    'Set the price, check the title and the Naver category, then approve. Approving registers the product in the store with its display off; check the page in the store centre and switch it on there.')];
+    'Set the price, check the title, the introduction and the Naver category, then approve. Approving registers the product in the store and shows it at once, unless you untick "Show in the store right away".')];
 
   if (state.lastEvents && state.lastEvents.length) {
     const label = { gate0_reject: 'Below the price floor', skip: 'Skipped', draft: 'Drafted', notice: 'Note', error: 'Problem' };
@@ -375,7 +375,7 @@ async function approvals() {
 
   if (ready.length) {
     nodes.push(h('h2', {}, `Ready to list (${ready.length})`),
-      h('p', { class: 'panel-sub' }, 'Approved but not in the store yet, for example when registering failed. Choose the Naver category and register; the product goes up hidden.'),
+      h('p', { class: 'panel-sub' }, 'Approved but not in the store yet, for example when registering failed. Choose the Naver category and register.'),
       h('div', { class: 'ticket-grid' }, ready.map(listCard)));
   }
   if (listed.length) {
@@ -524,22 +524,26 @@ function listCard(d) {
         h('p', { class: 'list-hint' }, 'This draft came from the candidates file, not a supplier the desk can list from. List it by hand in the store centre, or delete it here.')));
   }
   const marker = sendingMarker(d);
-  const button = h('button', { class: 'btn primary', disabled: true }, marker ? 'Check the store and register' : 'Register in store (hidden)');
+  const button = h('button', { class: 'btn primary', disabled: true }, marker ? 'Check the store and register' : 'Register in store');
+  const saved = state.edits[d.id] || {};
+  const showNow = h('input', { type: 'checkbox', id: `show-${d.id}` });
+  showNow.checked = saved.show ?? true;
+  showNow.addEventListener('change', () => { state.edits[d.id] = { ...(state.edits[d.id] || {}), show: showNow.checked }; });
   const note = h('span', { class: 'note' });
   let busy = state.sending.has(d.id);   // still running from before a redraw
   const picker = categoryPicker(d, () => {
     button.disabled = busy || !picker.valid();
-    if (picker.touched()) state.edits[d.id] = { category: picker.value() };
-  }, (state.edits[d.id] || {}).category);
-  if (busy) { picker.lock(true); note.textContent = 'Being registered…'; }
+    if (picker.touched()) state.edits[d.id] = { ...(state.edits[d.id] || {}), category: picker.value() };
+  }, saved.category);
+  if (busy) { picker.lock(true); showNow.disabled = true; note.textContent = 'Being registered…'; }
 
   button.addEventListener('click', async () => {
-    busy = button.disabled = true;
+    busy = button.disabled = showNow.disabled = true;
     state.sending.add(d.id);
     picker.lock(true);
     note.textContent = 'Copying images to Naver and registering. This takes up to a minute.';
     try {
-      const r = await api(`/api/drafts/${d.id}/list`, { body: { category_id: picker.value() } });
+      const r = await api(`/api/drafts/${d.id}/list`, { body: { category_id: picker.value(), show: showNow.checked } });
       state.sending.delete(d.id);
       delete state.edits[d.id];
       toast(r.message);
@@ -549,7 +553,7 @@ function listCard(d) {
       toast(err.message, true, 9000);
       if (unclearAnswer(err) || !card.isConnected) { redrawApprovals(card); return; }
       note.textContent = '';
-      busy = false;
+      busy = showNow.disabled = false;
       picker.lock(false);
       button.disabled = !picker.valid();
     }
@@ -560,7 +564,9 @@ function listCard(d) {
       marker ? h('p', { class: 'list-hint warn' },
         `A registration${d.listing.since ? ` at ${when(d.listing.since).slice(0, 16)}` : ''}${d.listing.by ? ` by ${d.listing.by}` : ''} got no clear answer from Naver, ` +
         'so the product may already be in the store. Look in the store centre first. Register searches the store before sending, so it will not create a second copy.') : null,
-      picker.node),
+      d.description ? h('div', { class: 'desc-set' }, h('span', { class: 'desc-label' }, 'Introduction on the product page'), h('p', { class: 'desc-read' }, d.description)) : null,
+      picker.node,
+      h('label', { class: 'show-now', for: `show-${d.id}` }, showNow, 'Show in the store right away')),
     h('div', { class: 'ticket-stub' }, button, note));
   return card;
 }
@@ -575,7 +581,8 @@ function listedCard(d) {
         h('span', {}, `Store no. ${l.channel_product_no || '–'}`),
         l.origin_product_no ? h('span', { class: 'muted' }, `origin ${l.origin_product_no}`) : null,
         l.listed_at ? h('span', { class: 'muted' }, `registered ${when(l.listed_at)}${l.listed_by ? ` by ${l.listed_by}` : ''}`) : null),
-      h('p', { class: 'list-hint' }, 'Check the page in the store centre, then switch its display on there.')),
+      h('p', { class: 'list-hint' }, l.display === 'ON' ? 'It is on display. Check the page in the store centre.'
+        : 'Check the page in the store centre, then switch its display on there.')),
     h('div', { class: 'ticket-stub' }, h('a', { class: 'btn', href: STORE_CENTRE, target: '_blank', rel: 'noopener', style: 'text-decoration:none' }, 'Open the store centre')));
 }
 
@@ -607,6 +614,26 @@ function ticket(d, maxTitle) {
   const saved = (!state.snap && state.edits[d.id]) || {};   // typed before the page was redrawn
   const input = h('input', { type: 'text', value: saved.title ?? d.title, 'aria-label': `Title of draft ${d.id}`, readonly: Boolean(state.snap) });
   const priceInput = h('input', { type: 'number', value: saved.price ?? d.price, min: lowest, step: '10', inputmode: 'numeric', id: `price-${d.id}` });
+  // The introduction shown above the supplier's pictures, written by the agent and checked here before it goes live.
+  const description = h('textarea', { id: `desc-${d.id}`, rows: 3, maxlength: 600, value: saved.description ?? d.description ?? '',
+    placeholder: 'Three short lines about the product. Leave empty to show only the supplier\'s pictures.' });
+  const showNow = h('input', { type: 'checkbox', id: `show-${d.id}` });
+  showNow.checked = saved.show ?? true;   // approving shows the product at once unless this is unticked
+  const writeIt = h('button', { type: 'button', class: 'btn small' }, 'Write with the agent');
+  writeIt.addEventListener('click', async () => {
+    lock(true);   // nothing is approved or rejected while the agent is writing
+    writeIt.textContent = 'Writing…';
+    try {
+      const r = await api(`/api/drafts/${d.id}/describe`, { body: {} });
+      d.description = r.description;   // the desk keeps it on the draft now
+      description.value = r.description;
+      sync();
+      toast(`Written by the agent. Check every line before approving. (${won(r.tokens_used)} of ${won(r.tokens_cap)} tokens used this week)`, false, 6000);
+      refreshOverview().catch(() => {});
+    } catch (err) { toast(err.message, true, 9000); }
+    writeIt.textContent = 'Write with the agent';
+    if (node.isConnected) { lock(false); sync(); } else redrawApprovals(null);
+  });
   const chars = h('span', { class: 'chars' });
   const approve = h('button', { class: 'btn primary' }, 'Approve and list');
   const reject = h('button', { class: 'btn danger' }, 'Reject');
@@ -614,7 +641,7 @@ function ticket(d, maxTitle) {
   const figures = h('div', {});
   let busy = !state.snap && state.sending.has(d.id);   // its request is still running from before a redraw
   const picker = state.snap || !d.listable ? null : categoryPicker(d, () => sync(), saved.category);
-  const verb = picker ? 'approve and list' : 'approve';
+  const verb = () => (!picker ? 'approve' : showNow.checked ? 'approve and list' : 'approve and list hidden');
 
   const drawFigures = (price) => {
     const profit = Math.round(price * (1 - rules.fee_rate) - d.cost);
@@ -636,11 +663,14 @@ function ticket(d, maxTitle) {
     drawFigures(price);
     // Until the picker has loaded, keep the category saved before the redraw; after that, only a choice made by hand.
     const category = !picker ? undefined : !picker.loaded() ? saved.category : picker.touched() ? picker.value() : undefined;
-    if (titleEdited || priceEdited || category !== undefined) state.edits[d.id] = { title: input.value, price: priceInput.value, category };
-    else delete state.edits[d.id];
+    const descEdited = description.value.trim() !== (d.description || '');
+    if (titleEdited || priceEdited || descEdited || !showNow.checked || category !== undefined) {
+      state.edits[d.id] = { title: input.value, price: priceInput.value, description: description.value, show: showNow.checked, category };
+    } else delete state.edits[d.id];
     if (busy) return;
     const noCategory = picker && !picker.valid();
-    approve.textContent = titleEdited || priceEdited ? `Save changes, ${verb}` : verb[0].toUpperCase() + verb.slice(1);
+    const v = verb();
+    approve.textContent = titleEdited || priceEdited || descEdited ? `Save changes, ${v}` : v[0].toUpperCase() + v.slice(1);
     approve.disabled = length === 0 || length > maxTitle || (d.blocked && !titleEdited) || price < lowest || noCategory;
     note.textContent = price < lowest ? `The price must be at least ${won(lowest)} KRW.`
       : d.blocked && !titleEdited ? 'Edit the title to remove the blocked wording, or reject.'
@@ -648,6 +678,8 @@ function ticket(d, maxTitle) {
   };
   input.addEventListener('input', sync);
   priceInput.addEventListener('input', sync);
+  description.addEventListener('input', sync);
+  showNow.addEventListener('change', sync);
 
   const node = h('article', { class: 'ticket' },
     h('div', { class: 'ticket-body' },
@@ -666,7 +698,13 @@ function ticket(d, maxTitle) {
       d.flags.length ? h('ul', { class: 'flags' }, d.flags.map((f) =>
         h('li', { class: /^(banned word|title longer)/.test(f) ? 'hard' : '' }, f))) : null,
       (extra.notes || []).length ? h('ul', { class: 'notes' }, extra.notes.map((n) => h('li', {}, n))) : null,
+      state.snap
+        ? (d.description ? h('div', { class: 'desc-set' }, h('span', { class: 'desc-label' }, 'Introduction on the product page'), h('p', { class: 'desc-read' }, d.description)) : null)
+        : (picker ? h('div', { class: 'desc-set' },
+            h('div', { class: 'desc-head' }, h('label', { for: `desc-${d.id}` }, 'Introduction on the product page'), writeIt), description,
+            h('small', {}, 'Shown above the supplier\'s pictures. Check that every line is true of this product.')) : null),
       picker ? picker.node : null,
+      picker ? h('label', { class: 'show-now', for: `show-${d.id}` }, showNow, 'Show in the store right away') : null,
       !state.snap && !d.listable ? h('p', { class: 'list-hint' }, 'This draft came from the candidates file, not a supplier the desk can list from, so approving does not register it.') : null),
     state.snap
       ? h('div', { class: 'ticket-stub' }, h('span', { class: `decision ${d.status}` }, decisionText(d)))
@@ -678,8 +716,8 @@ function ticket(d, maxTitle) {
   }
 
   const lock = (on) => {
-    busy = input.readOnly = priceInput.readOnly = on;
-    approve.disabled = reject.disabled = on;
+    busy = input.readOnly = priceInput.readOnly = description.readOnly = on;
+    approve.disabled = reject.disabled = showNow.disabled = writeIt.disabled = on;
     if (picker) picker.lock(on);
   };
   const send = async (action) => {
@@ -688,11 +726,13 @@ function ticket(d, maxTitle) {
     if (action === 'approve' && picker) note.textContent = 'Approving, then copying the images to Naver and registering. This takes up to a minute.';
     try {
       const body = action === 'approve'
-        ? { title: input.value.trim(), price: Math.floor(Number(priceInput.value) || 0), category_id: picker ? picker.value() : '' } : {};
+        ? { title: input.value.trim(), price: Math.floor(Number(priceInput.value) || 0), category_id: picker ? picker.value() : '',
+            description: description.value.trim(), show: showNow.checked } : {};
       const result = await api(`/api/drafts/${d.id}/${action}`, { body });
       state.sending.delete(d.id);
-      delete state.edits[d.id];
       const failed = action === 'approve' && picker && !result.listed;   // approved, but the store did not take it
+      if (failed) state.edits[d.id] = { show: showNow.checked, category: picker.value() };   // for the Ready-to-list card
+      else delete state.edits[d.id];
       toast(result.message, failed, failed ? 12000 : 3200);
       redrawApprovals(node);   // a listed draft moves to "In the store", a failed one to "Ready to list"
     } catch (err) {
