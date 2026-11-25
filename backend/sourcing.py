@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 import db
 import drafts
 import llm
+import store
 from price import price_floor
 
 load_dotenv(Path(__file__).with_name(".env"))
@@ -136,8 +137,26 @@ def detail(no):
 
 
 # ---------------------------------------------------------------- rules and picking
-def first_check(item, con, supplier, max_moq=MAX_MOQ):
+CARRIED = ("SALE", "HIDDEN", "OUTOFSTOCK")   # store statuses that mean "we already carry this"
+squash = lambda text: re.sub(r"\s+", "", text or "").lower()
+
+
+def store_products():
+    """The store's products as [{'no', 'name', 'status', 'code', ...}]; empty when the store cannot be read."""
+    shop = store.snapshot()
+    return [] if "error" in shop else shop["products"]
+
+
+def already_carried(keyword, products):
+    """Products we already carry whose name contains the search keyword (ignoring spaces)."""
+    return [p for p in products if p["status"] in CARRIED and squash(keyword) in squash(p["name"])]
+
+
+def first_check(item, con, supplier, max_moq=MAX_MOQ, listed_codes=None):
     """Reasons to drop an item using only the search result. Empty string means it may continue."""
+    in_store = (listed_codes or {}).get(f"G3-{item['no']}")
+    if in_store:
+        return f"already in the store as product {in_store}"
     if item["business_only"]:
         return "only businesses may buy it"
     if item["adult_only"]:
@@ -189,11 +208,14 @@ def formula_picks(pool, keyword, how_many):
                       "title": clean_title(title), "tags": [keyword], "source": "formula"})
     return picks
 
-def llm_picks(con, pool, keyword, how_many):
+def llm_picks(con, pool, keyword, how_many, carried=()):
     lines = "\n".join(f"{x['no']} | {x['name'][:40]} | {x['landed']} | {x['floor']}" for x in pool)
+    store_lines = "\n".join(f"- {p['name'][:40]}" for p in carried[:15])
+    known = (f"The store already sells the products below. Do not pick an item that is the same kind of product "
+             f"as one of them; answer [] if every candidate is.\n{store_lines}\n" if store_lines else "")
     reply = llm.chat(con, [
         {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": f"Search keyword: {keyword}\nPick at most {how_many}.\n{lines}"},
+        {"role": "user", "content": f"Search keyword: {keyword}\nPick at most {how_many}.\n{known}Candidates:\n{lines}"},
     ], purpose="sourcing", max_tokens=160 * how_many + 60)
     start, end = reply.find("["), reply.rfind("]")
     rows = json.loads(reply[start:end + 1])
@@ -226,6 +248,16 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None, ma
     look, picks = max(1, min(int(look), 30)), max(1, min(int(picks), 5))
     max_moq = MAX_MOQ if max_moq in (None, "") else max(1, min(int(max_moq), 50))
 
+    # What the store already carries: searching for it again would only draft a second copy.
+    listed = store_products()
+    carried = [p for p in listed if p["status"] in CARRIED]
+    same = already_carried(keyword, listed)
+    if same:
+        names = "; ".join(f"{p['name'][:40]} (product {p['no']})" for p in same[:3])
+        return stop(f"The store already sells {keyword}: {names}. Nothing was searched; "
+                    "try something the store does not carry yet.")
+    listed_codes = {p["code"]: p["no"] for p in listed if p.get("code")}
+
     try:
         result["total"], found = search(keyword, market, look, max_moq)
     except SourcingError as e:
@@ -238,7 +270,7 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None, ma
     for item in found:
         view = {k: item[k] for k in ("no", "name", "cost", "shipping", "landed", "floor", "moq", "thumb", "url")}
         items.append(view)
-        why = first_check(item, con, supplier, max_moq)
+        why = first_check(item, con, supplier, max_moq, listed_codes)
         if not why:
             try:
                 time.sleep(PAUSE)
@@ -263,18 +295,22 @@ def run(con, keyword, market="dome", look=10, picks=3, use_llm=True, by=None, ma
         db.add_run(con, keyword, market, {k: result[k] for k in ("items", "created", "total", "looked", "used_llm")})
         return result
 
-    chosen = []
+    # With the agent asked, only its picks become drafts: if it picks nothing or cannot answer, nothing is drafted.
+    # The cheapest items are taken only when asked for ("Pick the cheapest" / --no-llm).
     if use_llm:
+        chosen = []
         try:
-            chosen = llm_picks(con, pool, keyword, picks)
+            chosen = llm_picks(con, pool, keyword, picks, carried)
             result["used_llm"] = True
             if not chosen:
-                events.append({"kind": "notice", "message": "The agent picked nothing usable; the cheapest items were taken instead."})
+                events.append({"kind": "notice", "message": "The agent picked nothing: every candidate was weak or like "
+                                                            "something the store already sells. Nothing was drafted."})
         except llm.TokenCapReached as e:
-            events.append({"kind": "notice", "message": f"Weekly token cap reached, so the cheapest items were taken instead. ({e})"})
-        except Exception as e:  # network trouble or an answer that is not JSON
-            events.append({"kind": "notice", "message": f"The agent's answer could not be used ({e!r}); the cheapest items were taken instead."})
-    if not chosen:
+            events.append({"kind": "error", "message": f"Weekly token cap reached, so nothing was drafted. ({e})"})
+        except Exception as e:  # network trouble, an empty answer, or one that is not JSON
+            events.append({"kind": "error", "message": f"The agent could not answer ({e!r}), so nothing was drafted. "
+                                                       "Use 'Pick the cheapest' to draft without the agent."})
+    else:
         chosen = formula_picks(pool, keyword, picks)
 
     by_no = {x["no"]: x for x in pool}

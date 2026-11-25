@@ -52,6 +52,7 @@ def _fetch():
                               else ch.get("statusType"),
                     "price": ch.get("salePrice"),
                     "stock": ch.get("stockQuantity"),
+                    "code": ch.get("sellerManagementCode") or "",   # G3-<Domeggook item> on products the desk listed
                 })
         if len(contents) < PAGE_SIZE:
             break
