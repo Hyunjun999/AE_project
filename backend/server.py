@@ -103,8 +103,8 @@ def register(con, draft_id, category_id, user):
     if result.get("dry_run"):
         return result, "Dry run: the store request was built but not sent"
     if result.get("found_in_store"):
-        return result, f"Product {result['origin_product_no']} was already in the store from an earlier attempt; the desk has recorded it"
-    return result, f"Registered as product {result['origin_product_no']}, hidden until you switch it on"
+        return result, f"Store no. {result['channel_product_no']} was already in the store from an earlier attempt; the desk has recorded it"
+    return result, f"Registered as store no. {result['channel_product_no']}, hidden until you switch it on"
 
 
 SECRET_IN_TEXT = re.compile(r"((?:aid|key|secret|token|password)=)[^&\s'\"]+", re.IGNORECASE)

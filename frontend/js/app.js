@@ -571,7 +571,9 @@ function listedCard(d) {
     h('div', { class: 'ticket-body' }, ...cardHead(d, `Draft ${d.id}, in the store`),
       h('div', { class: 'listed' },
         h('span', { class: 'pill' }, l.display === 'ON' ? 'Registered on display' : 'Registered hidden'),
-        h('span', {}, `Product ${l.origin_product_no || '–'}`),
+        // The store centre's product list shows the smartstore (channel) number, so lead with that one.
+        h('span', {}, `Store no. ${l.channel_product_no || '–'}`),
+        l.origin_product_no ? h('span', { class: 'muted' }, `origin ${l.origin_product_no}`) : null,
         l.listed_at ? h('span', { class: 'muted' }, `registered ${when(l.listed_at)}${l.listed_by ? ` by ${l.listed_by}` : ''}`) : null),
       h('p', { class: 'list-hint' }, 'Check the page in the store centre, then switch its display on there.')),
     h('div', { class: 'ticket-stub' }, h('a', { class: 'btn', href: STORE_CENTRE, target: '_blank', rel: 'noopener', style: 'text-decoration:none' }, 'Open the store centre')));
