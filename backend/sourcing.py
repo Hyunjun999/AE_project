@@ -40,6 +40,8 @@ SYSTEM = (
     "easy to explain in one photo. Do not pick two near-identical items. "
     "For each pick write a Korean product title of at most 45 characters that contains the search keyword and "
     "makes no superlative or unverifiable claim, and three Korean search tags. "
+    "Supplier titles often carry another shop's name or a promotion in brackets, such as [이더블유] or (당일출고): "
+    "never copy those, and never put a brand or shop name in a title or tag. "
     'Answer with JSON only: [{"no": 123, "reason": "under 15 English words", "title": "...", "tags": ["..", "..", ".."]}]'
 )
 
@@ -76,8 +78,8 @@ def call(params):
     try:
         r = requests.get(ENDPOINT, params={"aid": key, "om": "json", **params}, timeout=30)
         body = r.json()
-    except (requests.RequestException, ValueError) as e:
-        raise SourcingError(f"Domeggook did not answer: {e!r}")
+    except (requests.RequestException, ValueError) as e:   # the error text quotes the address, key included
+        raise SourcingError(f"Domeggook did not answer ({type(e).__name__})")
     if not isinstance(body, dict) or "domeggook" not in body:
         raise SourcingError(f"Domeggook returned an unexpected answer: {json.dumps(body, ensure_ascii=False)[:200]}")
     return body["domeggook"]
@@ -165,19 +167,27 @@ def notes_for(item, info):
     return notes
 
 
+BRACKETED = re.compile(r"\[([^\]]*)\]|【([^】]*)】")   # usually another shop's name or a promotion
+QUANTITY = re.compile(r"\d+\s*(개|입|매|장|세트|팩|켤레|묶음|족|종|구|[Pp](?:cs)?|EA|ea)|\d\s*\+\s*\d")   # but [2개입] or [1+1] describes the product
+
+
 def clean_title(text):
-    return re.sub(r"\s+", " ", text).strip()[:drafts.MAX_TITLE].strip()
+    """Drop bracketed shop names and promotions (keeping pack sizes), squeeze spaces, cut to the title limit."""
+    squeeze = lambda s: re.sub(r"\s+", " ", s).strip()
+    kept = BRACKETED.sub(lambda m: " " + (m.group(1) or m.group(2) or "") + " "
+                         if QUANTITY.search(m.group(1) or m.group(2) or "") else " ", text)
+    return (squeeze(kept) or squeeze(text))[:drafts.MAX_TITLE].strip()
 
 
 def formula_picks(pool, keyword, how_many):
     """No LLM: take the cheapest items and build titles from the keyword and the supplier's title."""
     picks = []
     for item in sorted(pool, key=lambda x: x["landed"])[:how_many]:
-        title = item["name"] if keyword.replace(" ", "") in item["name"].replace(" ", "") else f"{keyword} {item['name']}"
+        base = clean_title(item["name"])   # clean first, so a keyword that only sat in a shop name is added back
+        title = base if keyword.replace(" ", "") in base.replace(" ", "") else f"{keyword} {base}"
         picks.append({"no": item["no"], "reason": "Lowest cost among the items that passed the rules.",
                       "title": clean_title(title), "tags": [keyword], "source": "formula"})
     return picks
-
 
 def llm_picks(con, pool, keyword, how_many):
     lines = "\n".join(f"{x['no']} | {x['name'][:40]} | {x['landed']} | {x['floor']}" for x in pool)

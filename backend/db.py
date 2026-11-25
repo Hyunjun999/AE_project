@@ -195,6 +195,19 @@ def set_decision(con, draft_id, status, decided_by, title=None, flags=None, pric
     log_action(con, f"draft_{status}", f"draft_id={draft_id} by={decided_by}")
 
 
+def delete_draft(con, draft_id):
+    """Remove a draft that never reached the store. Its candidate row stays, so the item can be drafted again."""
+    con.execute("DELETE FROM drafts WHERE id = ? AND status != 'published'", (draft_id,))
+    con.commit()
+
+
+def set_listing_state(con, draft_id, state):
+    """Mark an approved draft while it is being sent to the store ({'state': 'sending' or 'unknown', ...}), or clear it."""
+    con.execute("UPDATE drafts SET listing = ? WHERE id = ? AND status = 'approved'",
+                (json.dumps(state, ensure_ascii=False) if state else None, draft_id))
+    con.commit()
+
+
 def set_listed(con, draft_id, listing):
     """Mark an approved draft as registered in the store, keeping Naver's product numbers."""
     con.execute("UPDATE drafts SET status = 'published', listing = ? WHERE id = ?",

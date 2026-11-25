@@ -71,6 +71,7 @@ def sync(con, force=False):
             for row in changed_rows(r.json()):
                 db.upsert_order(con, str(row["productOrderId"]), row.get("productOrderStatus"),
                                 row.get("paymentDate"), row.get("lastChangedDate"))
+            con.commit()                             # never hold the write lock across the next call and pause
             cursor += dt.timedelta(hours=24)        # each call covers the 24 hours after lastChangedFrom
             time.sleep(0.6)                          # the API allows 2 requests per second
         con.commit()

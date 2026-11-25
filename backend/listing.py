@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -43,7 +44,13 @@ NOT_STATED = "상품상세참조"
 
 
 class ListingError(Exception):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status   # Naver's HTTP status when Naver answered with an error
+
+
+class ListingUncertain(ListingError):
+    """The product request went out but no clear answer came back: Naver may have created the product."""
 
 
 def naver(method, path, **kwargs):
@@ -54,11 +61,30 @@ def naver(method, path, **kwargs):
         try:
             body = r.json()
         except ValueError:
-            raise ListingError(f"Naver answered {r.status_code}: {r.text[:300]}")
+            raise ListingError(f"Naver answered {r.status_code}: {r.text[:300]}", r.status_code)
         problems = [f"{p.get('name', '')}: {p.get('message', '')}".strip(": ") for p in body.get("invalidInputs") or []]
         message = body.get("message") or body.get("code") or r.text[:300]
-        raise ListingError(f"Naver answered {r.status_code}: {message}" + (" | " + "; ".join(problems) if problems else ""))
+        raise ListingError(f"Naver answered {r.status_code}: {message}" + (" | " + "; ".join(problems) if problems else ""),
+                           r.status_code)
     return r.json() if r.content else {}
+
+
+def seller_code(item_id):
+    """Our code on every listed product: it lets the desk find a product an earlier attempt created."""
+    return f"G3-{item_id}"
+
+
+def find_listed(item_id):
+    """The store's product carrying our seller code for this item, as {'origin', 'channel', 'display'}, or None."""
+    code = seller_code(item_id)
+    answer = naver("POST", "/v1/products/search",
+                   json={"searchKeywordType": "SELLER_CODE", "sellerManagementCode": code, "page": 1, "size": 10})
+    for product in answer.get("contents") or []:
+        for channel in product.get("channelProducts") or []:
+            if channel.get("sellerManagementCode") == code and channel.get("statusType") != "DELETE":
+                return {"origin": product.get("originProductNo"), "channel": channel.get("channelProductNo"),
+                        "display": channel.get("channelProductDisplayStatusType")}
+    return None
 
 
 def cached(path, fetch):
@@ -306,7 +332,7 @@ def build_request(d, item, category_id, settings, image_url, detail_html, tags):
                 "afterServiceInfo": settings["afterServiceInfo"],
                 "originAreaInfo": origin_info(item["country"], NOT_STATED),   # the importer is not named by the supplier
                 "sellerCodeInfo": {
-                    "sellerManagementCode": f"G3-{d['item_id']}",
+                    "sellerManagementCode": seller_code(d["item_id"]),
                     "sellerCustomCode1": f"{'도매매' if d['supplier'] == 'domeme' else '도매꾹'}-{item['no']}",
                     "sellerCustomCode2": f"원가{landed}",   # read back by store.py for the margin watch
                 },
@@ -344,27 +370,75 @@ def approved_draft(con, draft_id):
         raise ListingError(f"Draft {draft_id} does not exist.")
     if d["status"] != "approved":
         raise ListingError(f"Draft {draft_id} is {d['status']}; only approved drafts can be listed.")
-    if d["supplier"] not in ("domeggook", "domeme"):
+    if d["supplier"] not in drafts.LISTABLE:
         raise ListingError(f"Draft {draft_id} comes from '{d['supplier']}'; only Domeggook and Domeme items can be listed.")
     return d
+
+
+_supplier_paths = {}   # item id -> (time read, supplier category path); the Approvals page asks on every load
+
+
+def supplier_path(item_id):
+    hit = _supplier_paths.get(item_id)
+    if hit and time.time() - hit[0] < 3600:
+        return hit[1]
+    path = dome_item(item_id)["category_path"]
+    _supplier_paths[item_id] = (time.time(), path)
+    return path
 
 
 def category_options(con, draft_id):
     d = db.get_draft(con, draft_id)
     if d is None:
         raise ListingError(f"Draft {draft_id} does not exist.")
-    item = dome_item(d["item_id"]) if d["supplier"] in ("domeggook", "domeme") else {"category_path": []}
-    return {"supplier_category": " > ".join(item["category_path"]),
-            "options": suggest_categories(d["title"], item["category_path"])}
+    path = supplier_path(d["item_id"]) if d["supplier"] in drafts.LISTABLE else []
+    return {"supplier_category": " > ".join(path), "options": suggest_categories(d["title"], path)}
 
 
-def register(con, draft_id, category_id, by=None, dry_run=False):
-    """List one approved draft with its display off. Returns a dict describing what happened."""
-    d = approved_draft(con, draft_id)
+def check_category(category_id):
+    """Raise ListingError unless category_id is a Naver leaf category."""
     if not re.fullmatch(r"\d{5,}", str(category_id or "")):
         raise ListingError("Choose a Naver category first.")
     if str(category_id) not in {c["id"] for c in categories() if c.get("last")}:
         raise ListingError(f"{category_id} is not a Naver leaf category.")
+
+
+def save_listed(con, draft_id, listing, by, how):
+    """Record the store product on the draft. A locked database is retried, because the product exists either way."""
+    for attempt in range(4):
+        try:
+            db.set_listed(con, draft_id, listing)
+            break
+        except sqlite3.OperationalError:
+            if attempt == 3:
+                raise ListingUncertain(f"Naver has product {listing['origin_product_no']}, but the desk could not save it. "
+                                       "Press Register again to record it.")
+            time.sleep(2)
+    try:   # the product is recorded; a missing log line must not turn that into an error
+        db.log_action(con, "draft_listed", f"draft_id={draft_id} product={listing['origin_product_no']} {how}"
+                                           + (f" by={by}" if by else ""))
+    except sqlite3.Error:
+        pass
+    return listing
+
+
+def register(con, draft_id, category_id, by=None, dry_run=False):
+    """List one approved draft with its display off. Returns a dict describing what happened.
+
+    Safe to repeat: the store is searched for our seller code first, so a product that an earlier attempt
+    created (its answer lost to a timeout) is recorded instead of being created a second time."""
+    d = approved_draft(con, draft_id)
+    check_category(category_id)
+    existing = find_listed(d["item_id"])
+    if existing:
+        listing = {"origin_product_no": existing["origin"], "channel_product_no": existing["channel"],
+                   "category_id": str(category_id), "display": existing["display"], "listed_at": db.now(),
+                   "listed_by": by, "found_in_store": True}
+        if dry_run:
+            return {"dry_run": True, "already_listed": listing}
+        return save_listed(con, draft_id, listing, by, "found in the store from an earlier attempt")
+    if d["listing"]:   # the store has no product with our code, so an earlier "sending"/"unknown" marker is void
+        db.set_listing_state(con, draft_id, None)
     item = dome_item(d["item_id"])
     reasons = why_not(item)
     if reasons:
@@ -385,7 +459,29 @@ def register(con, draft_id, category_id, by=None, dry_run=False):
     if dry_run:
         return {"dry_run": True, "request": request, "detail_images": len(pictures)}
 
-    answer = naver("POST", "/v2/products", json=request)
+    # From here on a failure may leave a product in the store, so the draft carries a marker until the answer is in.
+    db.set_listing_state(con, draft_id, {"state": "sending", "since": db.now(), "by": by})
+
+    def unclear(why):
+        try:   # if even this write fails, the "sending" marker stays and means the same thing
+            db.set_listing_state(con, draft_id, {"state": "unknown", "since": db.now(), "by": by})
+        except sqlite3.Error:
+            pass
+        return ListingUncertain("Naver gave no clear answer, so the product may be in the store already. Check the store "
+                                "centre; Register searches the store first, so pressing it again will not create a "
+                                f"second copy ({why})")
+
+    try:
+        answer = naver("POST", "/v2/products", json=request)
+    except ListingError as e:
+        if (e.status or 0) >= 500:   # a gateway error can hide a product that was created
+            raise unclear(e)
+        db.set_listing_state(con, draft_id, None)   # Naver refused the request: nothing was created
+        raise
+    except Exception as e:   # timeout, dropped connection, or an answer that is not JSON
+        raise unclear(type(e).__name__)
+    if not answer.get("originProductNo"):
+        raise unclear("no product number in the answer")
     listing = {
         "origin_product_no": answer.get("originProductNo"),
         "channel_product_no": answer.get("smartstoreChannelProductNo"),
@@ -393,10 +489,7 @@ def register(con, draft_id, category_id, by=None, dry_run=False):
         "listed_at": db.now(), "listed_by": by,
         "detail_images_hosted": sum(1 for p in pictures if p in hosted), "detail_images": len(pictures),
     }
-    db.set_listed(con, draft_id, listing)
-    db.log_action(con, "draft_listed", f"draft_id={draft_id} product={listing['origin_product_no']} hidden"
-                                       + (f" by={by}" if by else ""))
-    return listing
+    return save_listed(con, draft_id, listing, by, "hidden")
 
 
 if __name__ == "__main__":

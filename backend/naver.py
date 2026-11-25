@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -46,7 +47,18 @@ def get_token():
     return body["access_token"]
 
 
+MIN_GAP = 0.5                 # seconds between any two calls from this process: Naver allows 2 a second
+_gate = threading.Lock()      # shared by every thread, so parallel requests on the desk still keep the pace
+_last_call = 0.0
+
+
 def api(method, path, **kwargs):
     """Call the Commerce API. Example: api("POST", "/v1/products/search", json={...})"""
+    global _last_call
+    with _gate:
+        wait = _last_call + MIN_GAP - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call = time.monotonic()
     headers = {"Authorization": f"Bearer {get_token()}"}
     return requests.request(method, BASE + path, headers=headers, timeout=30, **kwargs)

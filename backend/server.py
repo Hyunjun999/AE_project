@@ -85,22 +85,83 @@ def generate_drafts(_query, body):
     return drafts.generate(con, use_llm=bool(body.get("use_llm")))
 
 
+LISTING_DRY_RUN = os.getenv("LISTING_DRY_RUN") == "1"   # build the store request but send nothing (for a preview desk)
+_registering, _registering_lock = set(), threading.Lock()  # drafts being sent to the store right now
+
+
+def register(con, draft_id, category_id, user):
+    """Send one approved draft to the store, never the same draft twice at once. Returns (listing, message)."""
+    with _registering_lock:
+        if draft_id in _registering:
+            raise listing.ListingError(f"Draft {draft_id} is already being registered.")
+        _registering.add(draft_id)
+    try:
+        result = listing.register(con, draft_id, category_id, by=user, dry_run=LISTING_DRY_RUN)
+    finally:
+        with _registering_lock:
+            _registering.discard(draft_id)
+    if result.get("dry_run"):
+        return result, "Dry run: the store request was built but not sent"
+    if result.get("found_in_store"):
+        return result, f"Product {result['origin_product_no']} was already in the store from an earlier attempt; the desk has recorded it"
+    return result, f"Registered as product {result['origin_product_no']}, hidden until you switch it on"
+
+
+SECRET_IN_TEXT = re.compile(r"((?:aid|key|secret|token|password)=)[^&\s'\"]+", re.IGNORECASE)
+
+
+def redact(text):
+    """Error text can quote a request address; hide anything that looks like a key in it."""
+    return SECRET_IN_TEXT.sub(r"\1***", str(text))
+
+
 def decide(draft_id, action, body):
+    """Approve or reject. An approval that names a category also registers the product, hidden."""
     con = db.connect()
-    ok, message = drafts.decide(con, draft_id, action, body.get("_user") or REVIEWER, body.get("title"), body.get("price"))
+    user = body.get("_user") or REVIEWER
+    category_id = str(body.get("category_id") or "").strip() if action == "approve" else ""
+    if category_id:
+        try:
+            listing.check_category(category_id)   # a bad category stops the approval too
+        except listing.ListingError as e:
+            raise ApiError(409, str(e))
+    ok, message = drafts.decide(con, draft_id, action, user, body.get("title"), body.get("price"))
     if not ok:
         raise ApiError(409, message)
-    return {"message": message, "drafts": db.draft_counts(con)}
+    result = {"message": message, "listed": False}
+    if category_id:
+        try:
+            result["listing"], listed = register(con, draft_id, category_id, user)
+            result.update(listed=True, message=f"{message}. {listed}.")
+        except listing.ListingUncertain as e:   # the request went out; the store may have the product
+            result.update(message=f"{message}, but {redact(e)}.")
+        except Exception as e:  # nothing reached the store; the approval stands and the draft waits under "Ready to list"
+            reason = str(e) if isinstance(e, (listing.ListingError, sourcing.SourcingError)) else repr(e)
+            result.update(message=f"{message}, but not registered: {redact(reason).rstrip('.')}. It waits under Ready to list.")
+    result["drafts"] = db.draft_counts(con)
+    return result
 
 
 def list_in_store(draft_id, body):
     """Register one approved draft in the store with its display off."""
     try:
-        result = listing.register(db.connect(), draft_id, body.get("category_id"), by=body.get("_user"))
+        result, message = register(db.connect(), draft_id, body.get("category_id"), body.get("_user"))
+    except listing.ListingUncertain as e:   # 502, so the page redraws and shows the draft's marker
+        raise ApiError(502, redact(e))
     except (listing.ListingError, sourcing.SourcingError) as e:
-        raise ApiError(409, str(e))
-    return {"message": f"Registered as product {result['origin_product_no']}, hidden until you switch it on.",
-            "listing": result}
+        raise ApiError(409, redact(e))
+    return {"message": message + ".", "listing": result}
+
+
+def delete_draft(draft_id, body):
+    con = db.connect()
+    with _registering_lock:   # held so a registration cannot start halfway through the delete
+        if draft_id in _registering:
+            raise ApiError(409, f"Draft {draft_id} is being registered in the store right now.")
+        ok, message = drafts.delete(con, draft_id, body.get("_user") or REVIEWER)
+    if not ok:
+        raise ApiError(409, message)
+    return {"message": message, "drafts": db.draft_counts(con)}
 
 
 def category_options(draft_id):
@@ -176,6 +237,7 @@ GET_ROUTES = {"/api/overview": overview, "/api/drafts": list_drafts, "/api/price
 POST_ROUTES = {"/api/drafts/generate": generate_drafts, "/api/ask": ask, "/api/source": source}
 DECISION = re.compile(r"^/api/drafts/(\d+)/(approve|reject)$")
 LIST = re.compile(r"^/api/drafts/(\d+)/list$")
+DELETE = re.compile(r"^/api/drafts/(\d+)/delete$")
 CATEGORIES = re.compile(r"^/api/drafts/(\d+)/categories$")
 
 
@@ -212,9 +274,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._send(200, fn(*args))
         except ApiError as e:
-            self._send(e.status, {"error": e.message})
+            self._send(e.status, {"error": redact(e.message)})
         except Exception as e:  # keep the page alive and show what went wrong
-            self._send(500, {"error": f"Server error: {e!r}"})
+            self._send(500, {"error": redact(f"Server error: {e!r}")})
 
     def _static(self, path):
         relative = "index.html" if path in ("", "/") else path.lstrip("/")
@@ -249,6 +311,12 @@ class Handler(BaseHTTPRequestHandler):
         user = self._user()
         if user is None:
             return
+        # Another site can make a browser send a plain form or text POST here, with the saved password attached.
+        # A cross-site request cannot carry a JSON content type without a CORS preflight, which this server never
+        # answers, so requiring it shuts that door.
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json":
+            self._send(415, {"error": "Send the request body as application/json."})
+            return
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -263,6 +331,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api(decide, int(match.group(1)), match.group(2), body)
         elif LIST.match(url.path):
             self._api(list_in_store, int(LIST.match(url.path).group(1)), body)
+        elif DELETE.match(url.path):
+            self._api(delete_draft, int(DELETE.match(url.path).group(1)), body)
         elif url.path in POST_ROUTES:
             self._api(POST_ROUTES[url.path], {}, body)
         else:
@@ -293,6 +363,8 @@ if __name__ == "__main__":
         raise SystemExit("Refusing to start: HOST is public but APP_PASSWORD is not set.")
     lock = "password on" if APP_PASSWORD else "no password (local only)"
     print(f"Listening on {HOST}:{PORT} | {lock} | reviewer: {REVIEWER}  (Ctrl+C to stop)", flush=True)
+    if LISTING_DRY_RUN:
+        print("LISTING_DRY_RUN=1: approvals and Register build the store request but send nothing.", flush=True)
     if AUTO_PUBLISH_MINUTES > 0:
         print(f"Publishing to the public page every {AUTO_PUBLISH_MINUTES} minutes when the data changes.", flush=True)
         threading.Thread(target=auto_publish, daemon=True).start()

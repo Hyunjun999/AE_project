@@ -11,12 +11,16 @@ import db
 load_dotenv(Path(__file__).parent / ".env")
 
 BASE_URL = os.getenv("LLM_BASE_URL", "https://genai.postech.ac.kr/agent/openai_compatible/a1/v1")
-MODEL = os.getenv("LLM_MODEL", "claude-haiku-5-5")
+MODEL = os.getenv("LLM_MODEL", "gemini-2.5-flash-lite")   # answers without hidden reasoning; claude-haiku-5-5 spent every token on it
 WEEKLY_CAP = int(os.getenv("LLM_WEEKLY_TOKEN_CAP", "15000"))
 
 
 class TokenCapReached(Exception):
     pass
+
+
+class EmptyAnswer(Exception):
+    """The model answered with no text (its tokens went to hidden reasoning)."""
 
 
 def week_start():
@@ -52,7 +56,14 @@ def chat(con, messages, purpose, max_tokens=400, model=None):
     if not usage:
         print("Warning: the response has no usage field; tokens for this call are recorded as 0.")
     db.log_tokens(con, model, purpose, usage)
-    return data["choices"][0]["message"]["content"]
+    choice = data["choices"][0]
+    text = choice["message"].get("content") or ""
+    if not text.strip():
+        # Models that think by default (Claude Haiku 5.5, for one) can spend every allowed token on hidden
+        # reasoning and return no text. The proxy rejects the settings that would turn that off.
+        raise EmptyAnswer(f"{model} returned no text ({choice.get('finish_reason')}, "
+                          f"{usage.get('completion_tokens', '?')} of {max_tokens} tokens used on hidden reasoning)")
+    return text
 
 
 if __name__ == "__main__":

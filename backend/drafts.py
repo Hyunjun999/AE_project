@@ -15,6 +15,7 @@ from price import contribution, price_floor
 CANDIDATES_CSV = Path(__file__).parent / "candidates.csv"
 BATCH = 5            # products per LLM call (instructions are shared across the batch)
 MAX_TITLE = 50       # characters
+LISTABLE = ("domeggook", "domeme")   # suppliers whose items listing.py can register in the store
 BANNED = ["최고", "1위", "최저가", "특가", "정품", "100%"]                       # claims we never make
 REVIEW_WORDS = ["유아", "아동", "어린이", "식품", "건강", "의료", "화장품",       # regulated or risky areas:
                 "충전", "배터리", "전기", "USB", "LED"]                          # a person must check these
@@ -182,6 +183,20 @@ def decide(con, draft_id, action, reviewer, new_title=None, new_price=None):
     return True, "Approved at the price you set" if price_change else "Approved"
 
 
+def delete(con, draft_id, by):
+    """Delete a draft that is not in the store. Returns (ok, message)."""
+    d = db.get_draft(con, draft_id)
+    if d is None:
+        return False, f"Draft {draft_id} does not exist."
+    if d["status"] == "published":
+        return False, f"Draft {draft_id} is in the store, so the desk keeps it."
+    if d["listing"]:   # a registration started and its answer never came: the store may have the product
+        return False, f"Draft {draft_id} may already be in the store. Press Register on it first; it checks the store."
+    db.delete_draft(con, draft_id)
+    db.log_action(con, "draft_deleted", f"draft_id={draft_id} was={d['status']} title={d['title'][:40]} by={by}")
+    return True, f"Draft {draft_id} deleted"
+
+
 def to_view(d):
     """Turn a draft row into a plain dict for the page, the agent and the terminal."""
     landed = d["cost"] + d["shipping"]
@@ -196,5 +211,5 @@ def to_view(d):
         "flags": flags, "blocked": any(is_hard(f) for f in flags),
         "decided_by": d["decided_by"], "decided_at": d["decided_at"],
         "reason": d["reason"], "extra": extra_of(d), "lowest_price": lowest_price(d),
-        "listing": json.loads(d["listing"]) if d["listing"] else None,
+        "listing": json.loads(d["listing"]) if d["listing"] else None, "listable": d["supplier"] in LISTABLE,
     }
